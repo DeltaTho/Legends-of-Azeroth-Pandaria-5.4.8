@@ -162,6 +162,24 @@ WorldDatabase.SynchThreads     = 1
 CharacterDatabase.SynchThreads = 2
 
 #
+#    PlayerbotsDatabaseInfo
+#        Description: Database connection settings for the playerbots module (only used when the
+#                     core is built with PLAYERBOTS). Same format as the settings above.
+#        Default:     "127.0.0.1;3306;root;root;playerbots"
+
+PlayerbotsDatabaseInfo = "127.0.0.1;3306;root;root;playerbots"
+
+#
+#    PlayerbotsDatabase.WorkerThreads
+#    PlayerbotsDatabase.SynchThreads
+#        Description: See the LoginDatabase/WorldDatabase/CharacterDatabase settings above.
+#        Default:     1 - (PlayerbotsDatabase.WorkerThreads)
+#                     1 - (PlayerbotsDatabase.SynchThreads)
+
+PlayerbotsDatabase.WorkerThreads = 1
+PlayerbotsDatabase.SynchThreads  = 1
+
+#
 #    MaxPingTime
 #        Description: Time (in minutes) between database pings.
 #        Default:     30
@@ -1322,8 +1340,10 @@ BirthdayTime = 1222964635
 #           DATABASE_LOGIN     = 1, // Auth database
 #           DATABASE_CHARACTER = 2, // Character database
 #           DATABASE_WORLD     = 4, // World database
+#           DATABASE_PLAYERBOTS = 8, // Playerbots database (only in builds with PLAYERBOTS)
 #
 #        Default:     7  - (All enabled)
+#                     15 - (All enabled, with the playerbots database)
 #                     4  - (Enable world only)
 #                     0  - (All disabled)
 

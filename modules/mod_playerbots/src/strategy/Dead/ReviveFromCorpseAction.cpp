@@ -232,10 +232,10 @@ WorldSafeLocsEntry const* SpiritHealerAction::GetGrave(bool startZone)
         Player* master = botAI->GetGroupMaster();
         if (master && master != bot)
         {
-            ClosestGrave = sObjectMgr->GetClosestGraveYard(master->GetWorldLocation(), bot->GetTeamId(), bot);
+            NewGrave = sObjectMgr->GetClosestGraveYard(master->GetWorldLocation(), bot->GetTeam(), bot);
 
-            if (ClosestGrave)
-                return ClosestGrave;
+            if (NewGrave)
+                return NewGrave;
         }
     }
     /*else if (startZone && AI_VALUE(uint8, "durability"))
@@ -261,7 +261,9 @@ WorldSafeLocsEntry const* SpiritHealerAction::GetGrave(bool startZone)
         }
     }*/
 
-    TC_LOG_ERROR("playerbots", "Graveyard nullptr");
+    if (!ClosestGrave)
+        TC_LOG_ERROR("playerbots", "Graveyard nullptr");
+
     return ClosestGrave;
 }
 
@@ -278,6 +280,8 @@ bool SpiritHealerAction::Execute(Event event)
     int64 deadTime = time(nullptr) - corpse->GetGhostTime();
 
     WorldSafeLocsEntry const* ClosestGrave = GetGrave(dCount > 10 || deadTime > 15 * MINUTE || AI_VALUE(uint8, "durability") < 10);
+    if (!ClosestGrave)
+        return false;
 
     if (bot->GetDistance2d(ClosestGrave->x, ClosestGrave->y) < sPlayerbotAIConfig->sightDistance)
     {
