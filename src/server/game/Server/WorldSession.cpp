@@ -605,6 +605,9 @@ void WorldSession::LogoutPlayer(bool save)
             _player->BuildPlayerRepop();
             _player->RepopAtGraveyard();
         }
+        ///- Players kicked by a server shutdown are not running away from a fight, so don't kill them
+        else if (World::IsStopped())
+            _player->CombatStop();
         else if (!_player->getAttackers().empty() || _player->IsCharmed())
         {
             // build set of player who attack _player or who have pet attacking of _player

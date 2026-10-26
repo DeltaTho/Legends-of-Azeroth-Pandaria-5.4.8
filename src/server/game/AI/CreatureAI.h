@@ -288,6 +288,10 @@ class TC_GAME_API CreatureAI : public UnitAI
         // unless EngagementStart did so for this same pull
         void EngageFromCombatState(Unit* who);
 
+        // The creature's combat was stopped on purpose (Unit::CombatStop: a script, an evade or its death), so it
+        // must not evade once UpdateVictim finds it out of combat
+        void EngagementStopped() { _isEngaged = false; }
+
     protected:
 
         bool _EnterEvadeMode(EvadeReason why = EVADE_REASON_OTHER);

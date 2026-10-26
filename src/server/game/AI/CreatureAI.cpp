@@ -486,7 +486,16 @@ bool NeedEvadeIfChallengeNotStarted(uint32 entry, uint32 mapId)
 bool CreatureAI::UpdateVictim()
 {
     if (!me->IsInCombat())
+    {
+        // The fight ended without the creature stopping it (its last enemy died, despawned or left combat), which
+        // removes IN_COMBAT at once: go home
+        if (IsEngaged())
+        {
+            EngagementOver();
+            EnterEvadeMode(EVADE_REASON_NO_HOSTILES);
+        }
         return false;
+    }
 
     if (InstanceScript* instance = me->GetInstanceScript())
     {

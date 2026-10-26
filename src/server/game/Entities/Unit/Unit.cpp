@@ -16,6 +16,7 @@
 */
 
 #include "Unit.h"
+#include "AbstractFollower.h"
 #include "Battlefield.h"
 #include "BattlefieldMgr.h"
 #include "Battleground.h"
@@ -8881,6 +8882,10 @@ void Unit::CombatStop(bool includingCast)
     m_CombatManager.EndAllPvECombat();
     m_CombatManager.SuppressPvPCombat();
     ClearInCombat();
+
+    if (Creature* creature = ToCreature())
+        if (CreatureAI* ai = creature->AI())
+            ai->EngagementStopped();
 }
 
 void Unit::CombatStopWithPets(bool includingCast)
@@ -13711,6 +13716,13 @@ void Unit::AddToWorld()
     RebuildTerrainSwaps();
 }
 
+void Unit::RemoveAllFollowers()
+{
+    // detach chase/follow/formation generators targeting us, they stop on their next update
+    while (!_followers.empty())
+        (*_followers.begin())->SetTarget(nullptr);
+}
+
 void Unit::RemoveFromWorld()
 {
     // cleanup
@@ -13731,6 +13743,7 @@ void Unit::RemoveFromWorld()
         RemoveCharmAuras();
         RemoveBindSightAuras();
         RemoveBoundAuras();
+        RemoveAllFollowers();
 
         RemoveAllGameObjects();
         RemoveAllDynObjects();
