@@ -60,6 +60,7 @@ enum Events
 
 enum Yells
 {
+    SAY_INTRO               = 0, // Very well. Witness the raw power of my new Lord!
     SAY_TRANSFORM_1         = 0, // The master's power takes on many forms ...
     SAY_TRANSFORM_2         = 1, // Behold the rage of the Firelands!
     SAY_HUMANOID_1          = 2, // Blaze of Glory!
@@ -69,6 +70,15 @@ enum Yells
     SAY_KILL                = 6, // Burn.
                                  // Soon ALL of Azeroth will burn!
                                  // You stood in the fire!
+};
+
+enum IntroState
+{
+    INTRO_WAITING       = 0,
+    INTRO_MOVING        = 1,
+    INTRO_DONE          = 2,
+
+    POINT_INTRO         = 100
 };
 
 enum Phases
@@ -116,9 +126,47 @@ class boss_majordomo_staghelm : public CreatureScript
                 me->setActive(true);
             }
 
+            void AllowCombat()
+            {
+                _introState = INTRO_DONE;
+                me->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_PC | UNIT_FLAG_IMMUNE_TO_NPC);
+            }
+
+            // He stays immune (template) until the Druids of the Flame around him are dead, then steps forward and fights. Their
+            // number depends on the difficulty, so look for living ones instead of counting deaths. Only with a player nearby:
+            // that keeps their grid loaded, and a restart with the druids already dead can't lock him for good.
+            void UpdateIntro(uint32 diff)
+            {
+                if (_introTimer > diff)
+                {
+                    _introTimer -= diff;
+                    return;
+                }
+
+                if (_introState == INTRO_MOVING)
+                {
+                    AllowCombat();
+                    return;
+                }
+
+                _introTimer = 1000;
+                if (!me->SelectNearestPlayer(60.0f) || me->FindNearestCreature(NPC_DRUID_OF_THE_FLAME, 60.0f, true))
+                    return;
+
+                _introState = INTRO_MOVING;
+                _introTimer = 5000;
+                Talk(SAY_INTRO);
+                me->GetMotionMaster()->MovePoint(POINT_INTRO, 523.4965f, -61.98785f, 83.94701f);
+            }
+
             void Reset() override
             {
                 _Reset();
+
+                // Leaving combat puts the template's immunity back. After a wipe he must stay attackable.
+                if (_introState == INTRO_DONE)
+                    AllowCombat();
+
                 me->SetMaxPower(POWER_ENERGY, 100);
                 me->SetPower(POWER_ENERGY, 0);
                 me->SetHealth(me->GetMaxHealth());
@@ -210,6 +258,9 @@ class boss_majordomo_staghelm : public CreatureScript
 
             void UpdateAI(uint32 diff) override
             {
+                if (_introState != INTRO_DONE)
+                    UpdateIntro(diff);
+
                 if (!UpdateVictim() || !CheckInArea(diff, 5769))
                     return;
 
@@ -325,6 +376,8 @@ class boss_majordomo_staghelm : public CreatureScript
             private:
                 uint8 _currentPhase;
                 uint32 _changePhaseNum;
+                uint8 _introState = INTRO_WAITING;
+                uint32 _introTimer = 1000;
         };
 
         CreatureAI* GetAI(Creature* creature) const override
