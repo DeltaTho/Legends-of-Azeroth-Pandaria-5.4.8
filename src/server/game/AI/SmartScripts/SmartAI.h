@@ -89,6 +89,9 @@ class TC_GAME_API SmartAI : public CreatureAI
         // Called when the creature is killed
         void JustDied(Unit* killer) override;
 
+        // As GuardAI, for a guard with abilities
+        bool CanSeeAlways(WorldObject const* obj) override;
+
         // Called when the creature kills a unit
         void KilledUnit(Unit* victim) override;
 
