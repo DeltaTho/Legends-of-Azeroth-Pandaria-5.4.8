@@ -61,13 +61,13 @@ enum Events
 enum Yells
 {
     SAY_INTRO               = 0, // Very well. Witness the raw power of my new Lord!
-    SAY_TRANSFORM_1         = 0, // The master's power takes on many forms ...
-    SAY_TRANSFORM_2         = 1, // Behold the rage of the Firelands!
-    SAY_HUMANOID_1          = 2, // Blaze of Glory!
-    SAY_HUMANOID_2          = 3, // Nothing but ash!
-    SAY_DEATH               = 4, // My studies... had only just begun...
-    SAY_BERSERK             = 5, // So much power!
-    SAY_KILL                = 6, // Burn.
+    SAY_TRANSFORM_1         = 1, // The master's power takes on many forms ...
+    SAY_TRANSFORM_2         = 3, // Behold the rage of the Firelands!
+    SAY_HUMANOID_1          = 5, // Blaze of Glory!
+    SAY_HUMANOID_2          = 7, // Nothing but ash!
+    SAY_DEATH               = 10, // My studies... had only just begun...
+    SAY_BERSERK             = 9, // So much power!
+    SAY_KILL                = 9, // Burn.
                                  // Soon ALL of Azeroth will burn!
                                  // You stood in the fire!
 };
