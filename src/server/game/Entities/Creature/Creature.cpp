@@ -1949,7 +1949,8 @@ void Creature::Respawn(bool force)
             UpdateEntry(m_originalEntry);
 
         CreatureTemplate const* cinfo = GetCreatureTemplate();
-        SelectLevel(cinfo);
+        // Same GUID as before: a new level within ~30 s of the corpse vanishing plays the client's level-up effect
+        SelectLevel(cinfo, true);
 
         setDeathState(JUST_RESPAWNED);
 
