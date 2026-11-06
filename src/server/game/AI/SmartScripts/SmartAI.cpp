@@ -692,6 +692,23 @@ void SmartAI::JustDied(Unit* killer)
     GetScript()->ProcessEventsFor(SMART_EVENT_DEATH, killer);
     if (HasEscortState(SMART_ESCORT_ESCORTING))
         EndPath(true);
+
+    // As GuardAI, for a guard with abilities
+    if (killer && me->IsGuard())
+        if (Player* player = killer->GetCharmerOrOwnerPlayerOrPlayerItself())
+            me->SendZoneUnderAttackMessage(player);
+}
+
+bool SmartAI::CanSeeAlways(WorldObject const* obj)
+{
+    if (!me->IsGuard())
+        return false;
+
+    if (Unit const* unit = obj->ToUnit())
+        if (unit->IsControlledByPlayer() && me->IsEngagedBy(unit))
+            return true;
+
+    return false;
 }
 
 void SmartAI::KilledUnit(Unit* victim)
