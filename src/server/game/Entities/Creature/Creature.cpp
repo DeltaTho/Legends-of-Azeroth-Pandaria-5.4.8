@@ -1779,7 +1779,13 @@ bool Creature::CanStartAttack(Unit const* who, bool force) const
     if (IsCivilian())
         return false;
 
-    if (HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_NPC))
+    // UNIT_FLAG_IMMUNE_TO_NPC only keeps a creature from picking fights with NPCs, as in upstream TrinityCore (its
+    // UNIT_FLAG_PLAYER_CONTROLLED is IsControlledByPlayer() here): players, their pets, guardians and vehicles stay valid.
+    // A creature immune to both still starts no fight at all, and neither does one that was only kept quiet by this flag
+    // and can't fight anyway: invisible helpers, wounded creatures, ones posed as dead, and those players use by clicking.
+    if (IsImmuneToNPC() && (IsImmuneToPC() || !who->IsControlledByPlayer() ||
+        HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NOT_SELECTABLE | UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_PACIFIED | UNIT_FLAG_STUNNED) ||
+        HasFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_SPELLCLICK) || GetStandState() == UNIT_STAND_STATE_DEAD))
         return false;
 
     // Do not attack non-combat pets
