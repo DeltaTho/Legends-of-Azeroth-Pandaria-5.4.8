@@ -1902,6 +1902,11 @@ void WorldSession::HandleTimeSyncResp(WorldPacket& recvData)
     uint32 counter, clientTicks;
     recvData >> counter >> clientTicks;
 
+    // No request pending: front() and pop() of an empty queue are undefined (TrinityCore master likewise drops a
+    // response whose counter it never sent).
+    if (!_player || _player->m_timeSyncQueue.empty())
+        return;
+
     if (counter != _player->m_timeSyncQueue.front())
         TC_LOG_DEBUG("network", "Wrong time sync counter from player %s (cheater?)", _player->GetName().c_str());
 
