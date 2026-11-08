@@ -519,21 +519,36 @@ uint32 RandomPlayerbotMgr::AddRandomBots()
     return _currentBots.size();
 }
 
+// Called from the bot's own AI (HireAction), so the logout, which deletes the Player and its AI with the running action,
+// is only queued here; ProcessPendingRemovals does it from OnPlayerbotUpdate (World::Update, before the map updates).
 void RandomPlayerbotMgr::Remove(Player* bot)
 {
-    ObjectGuid owner = bot->GetGUID();
+    std::lock_guard<std::mutex> guard(_pendingRemovalsLock);
+    _pendingRemovals.push_back(bot->GetGUID());
+}
 
-    PlayerbotsPreparedStatement* stmt = PlayerbotsDatabase.GetPreparedStatement(PLAYERBOTS_DEL_RANDOM_BOTS_BY_OWNER);
-    stmt->setUInt32(0, 0);
-    stmt->setUInt32(1, owner.GetCounter());
-    PlayerbotsDatabase.Execute(stmt);
-
+void RandomPlayerbotMgr::ProcessPendingRemovals()
+{
+    std::vector<ObjectGuid> removals;
     {
-        std::lock_guard<std::recursive_mutex> guard(EventCacheLock());
-        _eventCache[owner.GetCounter()].clear();
+        std::lock_guard<std::mutex> guard(_pendingRemovalsLock);
+        removals.swap(_pendingRemovals);
     }
 
-    LogoutPlayerBot(owner);
+    for (ObjectGuid const& owner : removals)
+    {
+        PlayerbotsPreparedStatement* stmt = PlayerbotsDatabase.GetPreparedStatement(PLAYERBOTS_DEL_RANDOM_BOTS_BY_OWNER);
+        stmt->setUInt32(0, 0);
+        stmt->setUInt32(1, owner.GetCounter());
+        PlayerbotsDatabase.Execute(stmt);
+
+        {
+            std::lock_guard<std::recursive_mutex> guard(EventCacheLock());
+            _eventCache[owner.GetCounter()].clear();
+        }
+
+        LogoutPlayerBot(owner);
+    }
 }
 
 void RandomPlayerbotMgr::CheckPlayers()

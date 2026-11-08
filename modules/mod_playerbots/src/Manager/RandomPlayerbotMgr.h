@@ -2,6 +2,7 @@
 #define _PLAYERBOT_RANDOMPLAYERBOTMGR_H
 
 #include "PlayerbotMgr.h"
+#include <mutex>
 #include <shared_mutex>
 
 class CachedEvent
@@ -141,6 +142,7 @@ public:
     void SetValue(uint32 bot, std::string const type, uint32 value, std::string const data = "");
     void SetValue(Player* bot, std::string const type, uint32 value, std::string const data = "");
     void Remove(Player* bot);
+    void ProcessPendingRemovals();
     void CheckPlayers();
     float getActivityMod() { return _activityMod; }
     float getActivityPercentage() { return _activityMod * 100.0f; }
@@ -236,6 +238,8 @@ private:
     std::vector<farm_zone> _farm_cache_data;
 
     std::vector<uint32> _currentBots;
+    std::mutex _pendingRemovalsLock;
+    std::vector<ObjectGuid> _pendingRemovals;
 
     // [team][bg type] -> battlemaster creature spawn guids
     std::map<TeamId, std::map<BattlegroundTypeId, std::vector<ObjectGuid::LowType>>> _battleMastersCache;

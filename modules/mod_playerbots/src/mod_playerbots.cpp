@@ -186,6 +186,7 @@ public:
     void OnPlayerbotUpdate(uint32 diff) override
     {
         PlayerbotRecordWorldUpdateDiff(diff);  // AC World::Update -> sWorldUpdateTime.UpdateWithDiff(diff)
+        sRandomPlayerbotMgr->ProcessPendingRemovals();
         sRandomPlayerbotMgr->UpdateAI(diff);
         sRandomPlayerbotMgr->UpdateSessions();
     }
