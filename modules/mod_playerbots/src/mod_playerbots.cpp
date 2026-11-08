@@ -210,6 +210,14 @@ public:
         }
 
         sRandomPlayerbotMgr->OnPlayerLogout(player);
+
+        // A bot's AI dies with its player, as AC does from MiscScript::OnDestructPlayer (AC Script/Playerbots.cpp:397-406);
+        // this core has no player-destruct hook, and WorldSession::LogoutPlayer always deletes the Player after this call.
+        // LogoutPlayerBot erases the bot from playerBots before LogoutPlayer, so DisablePlayerBot above no longer finds it
+        // and the AI used to stay in the AI map with a dangling bot pointer; the next login of that character then got it.
+        // ~PlayerbotAI erases the map entry.
+        if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(player))
+            delete botAI;
     }
 
     void OnPlayerbotLogoutBots() override { sRandomPlayerbotMgr->LogoutAllBots(); }

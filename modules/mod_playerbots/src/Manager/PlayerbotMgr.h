@@ -121,6 +121,7 @@ public:
 
     void AddPlayerbotData(Player* player, bool isBotAI);
     void RemovePlayerBotData(ObjectGuid const& guid, bool is_AI);
+    void RemovePlayerbotAI(ObjectGuid const& guid, PlayerbotAIBase const* botAI);
 
     PlayerbotAI* GetPlayerbotAI(Player* player);
     PlayerbotMgr* GetPlayerbotMgr(Player* player);

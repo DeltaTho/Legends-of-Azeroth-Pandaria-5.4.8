@@ -1017,8 +1017,8 @@ std::vector<std::string> PlayerbotHolder::HandlePlayerbotCommand(char const* arg
     // #503 (AC Bot/PlayerbotMgr.cpp:1053-1072): "self" hands the player's own character to the bot AI, or takes it back.
     // Fork mappings:
     //  - AC CanBeGameMaster() -> HasPermission(rbac::RBAC_PERM_COMMAND_GM), the mapping PlayerbotAI.cpp/PlayerbotSecurity.cpp use.
-    //  - AC's ~PlayerbotAI erases the AI-map entry (AC PlayerbotAI.cpp:357-358). This fork's destructor does not, so the
-    //    entry is erased here before the delete; otherwise GET_PLAYERBOT_AI(master) would return a freed AI.
+    //  - AC's ~PlayerbotAI erases the AI-map entry (AC PlayerbotAI.cpp:247-248); this fork's does too now, the explicit
+    //    erase before the delete is kept.
     if (!strcmp(cmd, "self") && master)
     {
         if (PlayerbotAI* selfAI = GET_PLAYERBOT_AI(master))
@@ -1540,6 +1540,14 @@ void PlayerbotsMgr::RemovePlayerBotData(ObjectGuid const& guid, bool is_AI)
             _playerbotsMgrMap.erase(itr);
         }
     }
+}
+
+// Erases the AI-map entry of `guid` only while it still holds `botAI` (a newer login's AI under the same guid stays).
+void PlayerbotsMgr::RemovePlayerbotAI(ObjectGuid const& guid, PlayerbotAIBase const* botAI)
+{
+    auto itr = _playerbotsAIMap.find(guid);
+    if (itr != _playerbotsAIMap.end() && itr->second == botAI)
+        _playerbotsAIMap.erase(itr);
 }
 
 PlayerbotAI* PlayerbotsMgr::GetPlayerbotAI(Player* player)

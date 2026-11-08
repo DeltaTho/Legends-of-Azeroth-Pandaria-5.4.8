@@ -334,6 +334,10 @@ PlayerbotAI::~PlayerbotAI()
 
     if (_aiObjectContext)
         delete _aiObjectContext;
+
+    // AC PlayerbotAI.cpp:247-248: a deleted AI leaves the AI map (DisablePlayerBot deleted it and left a dangling entry).
+    if (bot)
+        sPlayerbotsMgr->RemovePlayerbotAI(bot->GetGUID(), this);
 }
 
 // #173. Ported from AC Bot/PlayerbotAI.cpp:945-968 (IsAllowedCommand) and :577-788 (HandleCommand),
