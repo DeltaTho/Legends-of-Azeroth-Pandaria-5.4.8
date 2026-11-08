@@ -1246,7 +1246,7 @@ PlayerbotMgr::PlayerbotMgr(Player* const master) : PlayerbotHolder(), master(mas
 PlayerbotMgr::~PlayerbotMgr()
 {
     if (master)
-        sPlayerbotsMgr->RemovePlayerBotData(master->GetGUID(), false);
+        sPlayerbotsMgr->RemovePlayerbotMgr(master->GetGUID(), this);
 }
 
 void PlayerbotMgr::UpdateAIInternal(uint32 elapsed, bool /*minimal*/)
@@ -1550,6 +1550,14 @@ void PlayerbotsMgr::RemovePlayerbotAI(ObjectGuid const& guid, PlayerbotAIBase co
         _playerbotsAIMap.erase(itr);
 }
 
+// The same for the manager map: a newer login's PlayerbotMgr under the same guid stays.
+void PlayerbotsMgr::RemovePlayerbotMgr(ObjectGuid const& guid, PlayerbotAIBase const* playerbotMgr)
+{
+    auto itr = _playerbotsMgrMap.find(guid);
+    if (itr != _playerbotsMgrMap.end() && itr->second == playerbotMgr)
+        _playerbotsMgrMap.erase(itr);
+}
+
 PlayerbotAI* PlayerbotsMgr::GetPlayerbotAI(Player* player)
 {
     if (!(sPlayerbotAIConfig->enabled) || !player)
@@ -1586,7 +1594,12 @@ PlayerbotMgr* PlayerbotsMgr::GetPlayerbotMgr(Player* player)
     if (itr != _playerbotsMgrMap.end())
     {
         if (!itr->second->IsBotAI())
-            return reinterpret_cast<PlayerbotMgr*>(itr->second);
+        {
+            // As in GetPlayerbotAI: only the manager whose master is this very Player answers for it.
+            PlayerbotMgr* playerbotMgr = reinterpret_cast<PlayerbotMgr*>(itr->second);
+            if (playerbotMgr->GetMaster() == player)
+                return playerbotMgr;
+        }
     }
 
     return nullptr;

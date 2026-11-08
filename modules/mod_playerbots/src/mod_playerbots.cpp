@@ -218,6 +218,12 @@ public:
         // ~PlayerbotAI erases the map entry.
         if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(player))
             delete botAI;
+
+        // The other half of AC's OnDestructPlayer: the real player's PlayerbotMgr goes too, once its bots were logged out
+        // (LogoutAllBots above) and the random bots it mastered were let go (RandomPlayerbotMgr::OnPlayerLogout).
+        // ~PlayerbotMgr erases the map entry.
+        if (PlayerbotMgr* playerbotMgr = GET_PLAYERBOT_MGR(player))
+            delete playerbotMgr;
     }
 
     void OnPlayerbotLogoutBots() override { sRandomPlayerbotMgr->LogoutAllBots(); }
