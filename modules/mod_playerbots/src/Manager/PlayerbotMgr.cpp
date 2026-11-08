@@ -1555,7 +1555,14 @@ PlayerbotAI* PlayerbotsMgr::GetPlayerbotAI(Player* player)
     if (itr != _playerbotsAIMap.end())
     {
         if (itr->second->IsBotAI())
-            return reinterpret_cast<PlayerbotAI*>(itr->second);
+        {
+            // The map is keyed by guid, so an entry left from an earlier login of the same character would otherwise be
+            // handed to the new Player (e.g. its login packets, sent before OnBotLogin replaces the entry) and act on the
+            // freed one. Only the AI whose bot is this very Player answers for it.
+            PlayerbotAI* botAI = reinterpret_cast<PlayerbotAI*>(itr->second);
+            if (botAI->GetBot() == player)
+                return botAI;
+        }
     }
 
     return nullptr;
