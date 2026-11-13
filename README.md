@@ -11,10 +11,12 @@ of the core.
 
 ## Goal of this fork
 
-The goal of this fork is to implement the Cataclysm-era quests of the old world, region by
-region: quest order and prerequisites, phasing, scripted events and cutscenes, spawns, quest
-texts and map areas, compared against sniffed data and retail sources. Each region is worked as
-a whole, tested in game and then offered to the playerbots fork as a pull request.
+The goal of this fork is to implement the Cataclysm-era quests of the old world one region at
+a time.   Many of the commits include references that were used to validate, such as online data
+sniffs, other cores, video evidence, or retail references.
+
+The first pass is being developed and tested from the Horde's perspective, and later follow-up
+passes will be required to test and validate the alliance's perspective.
 
 ## Regions worked so far
 
