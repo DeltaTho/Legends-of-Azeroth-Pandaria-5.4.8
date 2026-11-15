@@ -337,6 +337,7 @@ void AddSC_blasted_lands();
 void AddSC_burning_steppes();
 void AddSC_duskwood();
 void AddSC_eastern_plaguelands();
+void AddSC_badlands_fuselight();
 void AddSC_eastern_plaguelands_caravan();
 void AddSC_eastern_plaguelands_chapel();
 void AddSC_eastern_plaguelands_darrowshire();
@@ -1389,6 +1390,7 @@ void AddEasternKingdomsScripts()
     AddSC_burning_steppes();
     AddSC_duskwood();
     AddSC_eastern_plaguelands();
+    AddSC_badlands_fuselight();
     AddSC_eastern_plaguelands_caravan();
     AddSC_eastern_plaguelands_chapel();
     AddSC_eastern_plaguelands_darrowshire();
