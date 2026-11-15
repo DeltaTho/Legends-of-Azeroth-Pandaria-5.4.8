@@ -836,10 +836,27 @@ struct go_badlands_titan_slab : public GameObjectAI
     }
 };
 
+// 206374 Trove of the Watchers (The Titans' Trove 27912 / 27913 end here, Return to Blam 27794 / 27888 start here). TDB 4.4.2
+// gives the chest GO_FLAG_INTERACT_COND, i.e. usable only by a player it has a quest for; this core never sends the
+// GO_DYNFLAG_LO_ACTIVATE that lifts the flag for a quest giver object (GameObject::BuildValuesUpdate sets it for chests and
+// goobers only), so the flag would close it to everyone. Ours instead: a player with nothing to take or hand in here gets no
+// window (the empty gossip box it opened before); the hand cursor still shows.
+struct go_badlands_trove_of_the_watchers : public GameObjectAI
+{
+    go_badlands_trove_of_the_watchers(GameObject* go) : GameObjectAI(go) { }
+
+    bool OnGossipHello(Player* player, bool /*isUse*/) override
+    {
+        QuestGiverStatus status = player->GetQuestDialogStatus(me);
+        return status == QuestGiverStatus::None || status == QuestGiverStatus::Future;
+    }
+};
+
 void AddSC_badlands_titans()
 {
     new creature_script<npc_badlands_wardens_game_controller>("npc_badlands_wardens_game_controller");
     new creature_script<npc_badlands_sentinels_game_start_pawn>("npc_badlands_sentinels_game_start_pawn");
     new creature_script<npc_badlands_titan_game_piece>("npc_badlands_titan_game_piece");
     RegisterGameObjectAI(go_badlands_titan_slab);
+    RegisterGameObjectAI(go_badlands_trove_of_the_watchers);
 }
