@@ -24,6 +24,10 @@
 // badlands\dossiers\vikings-dragonflight.md claims C1-C22):
 // - Taking any one training quest brings all three at once; a hunter's or warlock's own pet is dismissed. Taken in combat, they
 //   come when the fight is over.
+// - A pet bar: Attack and Follow, and two buttons per training quest taken (all six once the three are taken), at buttons 3-4,
+//   6-7 and 9-10. Each button use ticks that ability's objective; the abilities need a hostile target selected and do nothing
+//   while the player is mounted. Eric / Amakkar charges and stuns or hands out potions; Baelog / Jurrix shoots the player's target
+//   or speeds the three's attacks; Olaf / Gargal raises his shield or taunts the player's target onto himself.
 // - All three follow, fight what the player fights and whatever hostile comes within 40 yd of them, and obey Passive / Defensive
 //   (/petpassive, /petdefensive) and Follow / Attack given to the leader.
 // - They vanish in Dustbelch Grotto, the Scar of the Worldbreaker or anywhere outside the arc's areas and come back on return; a
@@ -33,7 +37,8 @@
 // How (ours where no source says): the summon aura 87262 / 87589 on the player stands for "the trio is with you" (spell_area rows
 // for the three quests in the arc's seven areas, until The Hidden Clutch is rewarded; the static trio at the camps is shown exactly
 // while the player does not hold it, section B's rows). Its effect 0 summons all three; its aura ticks every 5 s and brings back a
-// missing or dead companion while the player is alive and out of combat; its removal takes them away. Bots get no trio (ours).
+// missing or dead companion while the player is alive and out of combat; its removal takes them away. Bots get no trio (a bot never
+// presses a pet bar); a bot in the group beside the player gets each ability credit the player earns.
 
 #include "ScriptMgr.h"
 #include "ScriptedCreature.h"
@@ -180,6 +185,20 @@ static CompanionTrio const* GetTrioByEntry(uint32 entry, uint8& role)
     return nullptr;
 }
 
+static CompanionTrio const* GetTrioByBarSpell(uint32 spellId, uint8& role, uint8& index)
+{
+    for (CompanionTrio const& trio : CompanionTrios)
+        for (uint8 r = 0; r < MAX_COMPANION_ROLES; ++r)
+            for (uint8 i = 0; i < 2; ++i)
+                if (trio.BarSpells[r][i] == spellId)
+                {
+                    role = r;
+                    index = i;
+                    return &trio;
+                }
+    return nullptr;
+}
+
 static Creature* FindLivingCompanion(Unit* owner, uint32 entry)
 {
     std::list<Creature*> minions;
@@ -188,6 +207,12 @@ static Creature* FindLivingCompanion(Unit* owner, uint32 entry)
         if (minion->IsAlive() && !minion->IsDestroyedObject())
             return minion;
     return nullptr;
+}
+
+// A pair of buttons shows while its training quest is taken, done or handed in (C3; after the three hand-ins all six stay)
+static bool CompanionPairShown(Player* player, CompanionTrio const* trio, uint8 role)
+{
+    return player->GetQuestStatus(trio->Quests[role]) != QUEST_STATUS_NONE;
 }
 
 // Summons whichever of the three is missing (C1, C18-C20): never two of one, never for a dead player or one in combat, on a taxi or
@@ -223,6 +248,27 @@ static void DismissCompanions(Unit* owner, CompanionTrio const* trio)
 {
     for (uint8 role = 0; role < MAX_COMPANION_ROLES; ++role)
         owner->RemoveAllMinionsByEntry(trio->Entries[role]);
+}
+
+// The ability credit (C10), per use; a playerbot in the player's group within 40 yd gets it too (plan rule 2 as amended: bots
+// only, a second real player uses his own companions). KilledMonsterCredit only counts for a quest in the log that needs it.
+static void CreditCompanionAbility(Player* player, uint32 credit)
+{
+    player->KilledMonsterCredit(credit);
+
+    Group* group = player->GetGroup();
+    if (!group)
+        return;
+
+    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+    {
+        Player* member = ref->GetSource();
+        if (!member || member == player || !member->GetSession()->IsBot())
+            continue;
+        if (!member->IsInMap(player) || !member->IsWithinDistInMap(player, CompanionBotCreditRange))
+            continue;
+        member->KilledMonsterCredit(credit);
+    }
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------
@@ -313,7 +359,9 @@ class spell_badlands_companion_aura : public AuraScript
 // ---------------------------------------------------------------------------------------------------------------------------
 
 // 46855 Eric "The Swift", 46856 Baelog, 46857 Olaf, 47021 Amakkar, 47024 Jurrix Whitemane, 47022 Gargal
-// - The leader is the player's pet (controllable guardian with a CharmInfo). His stance (Assist by default, /petdefensive, /petpassive) drives the other two (ours).
+// - The leader is the player's pet (controllable guardian with a CharmInfo, whose bar is the pet bar the client shows): the bar is
+//   built here (Attack, Follow, and each taken quest's pair at 3-4 / 6-7 / 9-10; slots 4 and 7 empty, ours) and rebuilt when the
+//   quests change. His stance (Assist by default, /petdefensive, /petpassive) drives the other two (ours).
 // - Targets, in order: what the player hits, the player's selected target while he fights it, the leader's target, what attacks
 //   the player or the three, and (Assist) the nearest hostile creature within 40 yd (wiki; C12 "they pull extra packs"). Riding
 //   past, only what has turned on them (as the Eastern Plaguelands followers).
@@ -338,6 +386,13 @@ struct npc_badlands_companion : public ScriptedAI
         if (_role != ROLE_LEADER)
             me->SetReactState(REACT_ASSIST);
 
+        // Guardian::InitSummon sends the bar right after this hook (the quests held now: also after a login or a re-summon)
+        if (_role == ROLE_LEADER)
+        {
+            _barMask = 0xFF;
+            BuildBar(summoner->ToPlayer(), false);
+        }
+
         _events.Reset();
         _events.ScheduleEvent(EVENT_COMPANION_SETUP, 500ms);
         _events.ScheduleEvent(EVENT_COMPANION_CHECK, 1s);
@@ -360,6 +415,36 @@ struct npc_badlands_companion : public ScriptedAI
         if (Creature* leader = GetLeader(owner))
             _stance = leader->GetReactState();
         return _stance;
+    }
+
+    void BuildBar(Player* owner, bool send)
+    {
+        CharmInfo* charmInfo = me->GetCharmInfo();
+        if (!charmInfo || !owner)
+            return;
+
+        uint8 mask = 0;
+        for (uint8 role = 0; role < MAX_COMPANION_ROLES; ++role)
+            if (CompanionPairShown(owner, _trio, role))
+                mask |= 1 << role;
+
+        bool changed = mask != _barMask;
+        if (!changed && !send)
+            return;
+        _barMask = mask;
+
+        charmInfo->SetActionBar(0, COMMAND_ATTACK, ACT_COMMAND);
+        charmInfo->SetActionBar(1, COMMAND_FOLLOW, ACT_COMMAND);
+        for (uint8 slot = 2; slot < MAX_UNIT_ACTION_BAR_INDEX; ++slot)
+            charmInfo->SetActionBar(slot, 0, ACT_PASSIVE);
+        for (uint8 role = 0; role < MAX_COMPANION_ROLES; ++role)
+            if (mask & (1 << role))
+                for (uint8 i = 0; i < 2; ++i)
+                    charmInfo->SetActionBar(CompanionBarSlots[role][i], _trio->BarSpells[role][i], ACT_PASSIVE);
+
+        // A taken or abandoned quest changes the bar: the client knows the pet's buttons only from this packet
+        if ((send || changed) && owner->GetMinionGUID() == me->GetGUID() && !owner->GetCharmGUID())
+            owner->CharmSpellInitialize();
     }
 
     void MoveInLineOfSight(Unit* /*who*/) override { }
@@ -422,7 +507,7 @@ struct npc_badlands_companion : public ScriptedAI
         }
     }
 
-    // The player is gone or no longer holds the aura: go. Left far behind: brought along.
+    // The player is gone or no longer holds the aura: go. Left far behind: brought along. The leader keeps the bar.
     bool Check()
     {
         Player* owner = GetOwnerPlayer();
@@ -443,6 +528,14 @@ struct npc_badlands_companion : public ScriptedAI
             me->NearTeleportTo(pos.GetPositionX(), pos.GetPositionY(), z, owner->GetOrientation());
             me->GetMotionMaster()->Clear(false);
             me->GetMotionMaster()->MoveFollow(owner, PET_FOLLOW_DIST, me->GetFollowAngle());
+        }
+
+        if (_role == ROLE_LEADER)
+        {
+            // Back from a vehicle or a charm: the client shows that bar and forgets ours
+            bool charmed = !owner->GetCharmGUID().IsEmpty();
+            BuildBar(owner, _ownerCharmed && !charmed);
+            _ownerCharmed = charmed;
         }
 
         // Keep up with a mounted player (ours: guardians get no speed from their owner here, and were teleported up every second)
@@ -587,9 +680,296 @@ private:
     uint8 _role = ROLE_LEADER;
     ObjectGuid _ownerGUID;
     EventMap _events;
+    uint8 _barMask = 0xFF;
+    bool _ownerCharmed = false;
     uint32 _followLock = 0;
     ReactStates _stance = REACT_ASSIST;
     bool _speedSynced = false;
+};
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// The bar's six abilities
+// ---------------------------------------------------------------------------------------------------------------------------
+
+// The player behind a companion's cast, and that cast's place in the trio
+struct CompanionCastContext
+{
+    Player* Owner = nullptr;
+    CompanionTrio const* Trio = nullptr;
+    uint8 Role = 0;
+    uint8 Index = 0;
+};
+
+static bool GetCompanionCastContext(Unit* caster, uint32 spellId, CompanionCastContext& ctx)
+{
+    if (!caster || caster->GetTypeId() != TYPEID_UNIT)
+        return false;
+    ctx.Trio = GetTrioByBarSpell(spellId, ctx.Role, ctx.Index);
+    if (!ctx.Trio || caster->GetEntry() != ctx.Trio->Entries[ROLE_LEADER])
+        return false;
+    Unit* owner = caster->GetOwner();
+    ctx.Owner = owner ? owner->ToPlayer() : nullptr;
+    return ctx.Owner != nullptr;
+}
+
+// Usable while the player holds the ability's quest (or has handed it in), is not mounted (720258 2010-12-08 [+6]; the refusal is
+// ours) and has a hostile target selected (Adelorna 2010-12-01 [+30]: "you have to tag the mob ... before the abilities become
+// active"); the companion who carries it out must be there. Valhalla Shot / Fiery Blast reach 100 yd, Mighty Shout 40 yd (ours).
+static SpellCastResult CheckCompanionAbility(Unit* caster, uint32 spellId)
+{
+    CompanionCastContext ctx;
+    if (!GetCompanionCastContext(caster, spellId, ctx))
+        return SPELL_FAILED_DONT_REPORT;
+
+    if (ctx.Owner->IsMounted())
+        return SPELL_FAILED_NOT_MOUNTED;
+
+    if (!CompanionPairShown(ctx.Owner, ctx.Trio, ctx.Role))
+        return SPELL_FAILED_DONT_REPORT;
+
+    Unit* target = ctx.Owner->GetSelectedUnit();
+    if (!target || !target->IsAlive() || !ctx.Owner->IsValidAttackTarget(target))
+        return SPELL_FAILED_BAD_TARGETS;
+
+    if (ctx.Role != ROLE_LEADER)
+    {
+        Creature* helper = FindLivingCompanion(ctx.Owner, ctx.Trio->Entries[ctx.Role]);
+        if (!helper)
+            return SPELL_FAILED_NO_VALID_TARGETS;
+
+        if (spellId == SPELL_BAELOG_VALHALLA_SHOT || spellId == SPELL_JURRIX_FIERY_BLAST)
+        {
+            if (!helper->IsWithinDistInMap(target, CompanionShotRange))
+                return SPELL_FAILED_OUT_OF_RANGE;
+        }
+        else if (spellId == SPELL_OLAF_MIGHTY_SHOUT || spellId == SPELL_GARGAL_MIGHTY_SHOUT)
+        {
+            if (!helper->IsWithinDistInMap(target, CompanionAssistRange))
+                return SPELL_FAILED_OUT_OF_RANGE;
+        }
+    }
+    return SPELL_CAST_OK;
+}
+
+static void CreditCompanionCast(Unit* caster, uint32 spellId)
+{
+    CompanionCastContext ctx;
+    if (GetCompanionCastContext(caster, spellId, ctx))
+        CreditCompanionAbility(ctx.Owner, ctx.Trio->Credits[ctx.Role][ctx.Index]);
+}
+
+// 87278 Eric's Charge, 87608 Amakkar's Kidney Shot: the core charges and stuns the explicit target; credit 46862
+class spell_badlands_companion_charge : public SpellScript
+{
+    PrepareSpellScript(spell_badlands_companion_charge);
+
+    SpellCastResult CheckCast()
+    {
+        return CheckCompanionAbility(GetCaster(), GetSpellInfo()->Id);
+    }
+
+    void HandleAfterCast()
+    {
+        CreditCompanionCast(GetCaster(), GetSpellInfo()->Id);
+    }
+
+    void Register() override
+    {
+        OnCheckCast += SpellCheckCastFn(spell_badlands_companion_charge::CheckCast);
+        AfterCast += SpellCastFn(spell_badlands_companion_charge::HandleAfterCast);
+    }
+};
+
+// 87279 Eric's Pocket Potion, 87609 Amakkar's Pocket Potion: heals the three over 10 s (effect 0, area entries conditioned to the
+// three entries; limited here to this player's three, not another player's beside him); credit 46863
+class spell_badlands_companion_potion : public SpellScript
+{
+    PrepareSpellScript(spell_badlands_companion_potion);
+
+    SpellCastResult CheckCast()
+    {
+        return CheckCompanionAbility(GetCaster(), GetSpellInfo()->Id);
+    }
+
+    void FilterTargets(std::list<WorldObject*>& targets)
+    {
+        targets.clear();
+        CompanionCastContext ctx;
+        if (!GetCompanionCastContext(GetCaster(), GetSpellInfo()->Id, ctx))
+            return;
+        for (uint8 role = 0; role < MAX_COMPANION_ROLES; ++role)
+            if (Creature* companion = FindLivingCompanion(ctx.Owner, ctx.Trio->Entries[role]))
+                targets.push_back(companion);
+    }
+
+    void HandleAfterCast()
+    {
+        CreditCompanionCast(GetCaster(), GetSpellInfo()->Id);
+    }
+
+    void Register() override
+    {
+        OnCheckCast += SpellCheckCastFn(spell_badlands_companion_potion::CheckCast);
+        OnObjectAreaTargetSelect += SpellObjectAreaTargetSelectFn(spell_badlands_companion_potion::FilterTargets, EFFECT_0, TARGET_UNIT_DEST_AREA_ENTRY);
+        AfterCast += SpellCastFn(spell_badlands_companion_potion::HandleAfterCast);
+    }
+};
+
+// 87281 Baelog's Valhalla Shot / 87612 Jurrix's Fiery Blast (script effect), 87280 Baelog's Warcry / 87611 Jurrix's Time Warp,
+// 87282 / 87613 Shield Wall, 87283 / 87614 Mighty Shout (dummies): the leader's order, carried out by the right companion of this
+// player (the effect's area entry target, set here): the shot at the player's selected target (C6, 808808 "click on the
+// flameblade, not the npc"), the attack speed buff on the three (87277 / 87596), the shield on himself (87275 / 87607), the taunt
+// of the player's target onto himself (87274 / 87606). Credits 46864-46867 (Horde: Fiery Blast 46865, Time Warp 46864).
+class spell_badlands_companion_order : public SpellScript
+{
+    PrepareSpellScript(spell_badlands_companion_order);
+
+    SpellCastResult CheckCast()
+    {
+        return CheckCompanionAbility(GetCaster(), GetSpellInfo()->Id);
+    }
+
+    void FilterTargets(std::list<WorldObject*>& targets)
+    {
+        targets.clear();
+        CompanionCastContext ctx;
+        if (!GetCompanionCastContext(GetCaster(), GetSpellInfo()->Id, ctx))
+            return;
+        if (Creature* helper = FindLivingCompanion(ctx.Owner, ctx.Trio->Entries[ctx.Role]))
+            targets.push_back(helper);
+    }
+
+    void HandleOrder(SpellEffIndex effIndex)
+    {
+        PreventHitDefaultEffect(effIndex);
+
+        Unit* helper = GetHitUnit();
+        CompanionCastContext ctx;
+        if (!helper || !GetCompanionCastContext(GetCaster(), GetSpellInfo()->Id, ctx))
+            return;
+        _orderCarried = true;
+        Unit* target = ctx.Owner->GetSelectedUnit();
+
+        auto attack = [helper](Unit* victim)
+        {
+            if (victim && helper->IsAIEnabled && !helper->GetVictim() && helper->IsValidAttackTarget(victim))
+                helper->ToCreature()->AI()->AttackStart(victim);
+        };
+
+        switch (GetSpellInfo()->Id)
+        {
+            case SPELL_BAELOG_VALHALLA_SHOT:
+                if (target)
+                {
+                    helper->CastSpell(target, SPELL_VALHALLA_SHOT_HIT, true);
+                    attack(target);
+                }
+                break;
+            case SPELL_JURRIX_FIERY_BLAST:
+                if (target)
+                {
+                    helper->CastSpell(target, SPELL_FIERY_BLAST_HIT, true);
+                    attack(target);
+                }
+                break;
+            case SPELL_BAELOG_WARCRY:
+                helper->CastSpell(helper, SPELL_WARCRY_BUFF, true);
+                break;
+            case SPELL_JURRIX_TIME_WARP:
+                helper->CastSpell(helper, SPELL_TIME_WARP_BUFF, true);
+                break;
+            case SPELL_OLAF_SHIELD_WALL:
+                helper->CastSpell(helper, SPELL_OLAF_SHIELD_WALL_BUFF, true);
+                break;
+            case SPELL_GARGAL_SHIELD_WALL:
+                helper->CastSpell(helper, SPELL_GARGAL_SHIELD_WALL_BUFF, true);
+                break;
+            case SPELL_OLAF_MIGHTY_SHOUT:
+                helper->CastSpell(helper, SPELL_OLAF_MIGHTY_SHOUT_TAUNT, true);
+                attack(target);
+                break;
+            case SPELL_GARGAL_MIGHTY_SHOUT:
+                helper->CastSpell(helper, SPELL_GARGAL_MIGHTY_SHOUT_TAUNT, true);
+                attack(target);
+                break;
+            default:
+                break;
+        }
+    }
+
+    // Only an order that reached its companion counts (the target can be lost to line of sight in Spell::AddUnitTarget)
+    void HandleAfterCast()
+    {
+        if (_orderCarried)
+            CreditCompanionCast(GetCaster(), GetSpellInfo()->Id);
+    }
+
+    bool _orderCarried = false;
+
+    void Register() override
+    {
+        OnCheckCast += SpellCheckCastFn(spell_badlands_companion_order::CheckCast);
+        OnObjectAreaTargetSelect += SpellObjectAreaTargetSelectFn(spell_badlands_companion_order::FilterTargets, EFFECT_0, TARGET_UNIT_DEST_AREA_ENTRY);
+        // Script effect on the two shots, dummy on the other four
+        OnEffectHitTarget += SpellEffectFn(spell_badlands_companion_order::HandleOrder, EFFECT_0, SPELL_EFFECT_ANY);
+        AfterCast += SpellCastFn(spell_badlands_companion_order::HandleAfterCast);
+    }
+};
+
+// 87277 Baelog's Warcry, 87596 Jurrix's Time Warp (effect 0, area entries conditioned to the three entries): this player's three
+// only, not another player's beside them
+class spell_badlands_companion_buff : public SpellScript
+{
+    PrepareSpellScript(spell_badlands_companion_buff);
+
+    void FilterTargets(std::list<WorldObject*>& targets)
+    {
+        Unit* caster = GetCaster();
+        Unit* owner = caster ? caster->GetOwner() : nullptr;
+        targets.remove_if([owner](WorldObject* object)
+        {
+            Unit* unit = object->ToUnit();
+            return !owner || !unit || unit->GetOwnerGUID() != owner->GetGUID();
+        });
+    }
+
+    void Register() override
+    {
+        OnObjectAreaTargetSelect += SpellObjectAreaTargetSelectFn(spell_badlands_companion_buff::FilterTargets, EFFECT_0, TARGET_UNIT_DEST_AREA_ENTRY);
+    }
+};
+
+// 87274 Olaf's Mighty Shout, 87606 Gargal's Mighty Shout (taunt, effects 0 and 1 on enemies around him): "Taunts the target to
+// attack Olaf" (87283): the player's selected target when it is in reach (ours); without one the spell's own area
+static void FilterShoutTargets(Unit* caster, std::list<WorldObject*>& targets)
+{
+    Unit* owner = caster ? caster->GetOwner() : nullptr;
+    Player* player = owner ? owner->ToPlayer() : nullptr;
+    if (!player)
+        return;
+
+    Unit* target = player->GetSelectedUnit();
+    if (!target || !target->IsAlive() || !caster->IsValidAttackTarget(target) || !caster->IsWithinDistInMap(target, CompanionAssistRange))
+        return;
+
+    targets.clear();
+    targets.push_back(target);
+}
+
+class spell_badlands_companion_shout : public SpellScript
+{
+    PrepareSpellScript(spell_badlands_companion_shout);
+
+    void FilterTargets(std::list<WorldObject*>& targets)
+    {
+        FilterShoutTargets(GetCaster(), targets);
+    }
+
+    void Register() override
+    {
+        OnObjectAreaTargetSelect += SpellObjectAreaTargetSelectFn(spell_badlands_companion_shout::FilterTargets, EFFECT_0, TARGET_UNIT_SRC_AREA_ENEMY);
+        OnObjectAreaTargetSelect += SpellObjectAreaTargetSelectFn(spell_badlands_companion_shout::FilterTargets, EFFECT_1, TARGET_UNIT_SRC_AREA_ENEMY);
+    }
 };
 
 void AddSC_badlands_companions()
@@ -597,4 +977,9 @@ void AddSC_badlands_companions()
     new spell_script<spell_badlands_companion_summon>("spell_badlands_companion_summon");
     new aura_script<spell_badlands_companion_aura>("spell_badlands_companion_aura");
     new creature_script<npc_badlands_companion>("npc_badlands_companion");
+    new spell_script<spell_badlands_companion_charge>("spell_badlands_companion_charge");
+    new spell_script<spell_badlands_companion_potion>("spell_badlands_companion_potion");
+    new spell_script<spell_badlands_companion_order>("spell_badlands_companion_order");
+    new spell_script<spell_badlands_companion_buff>("spell_badlands_companion_buff");
+    new spell_script<spell_badlands_companion_shout>("spell_badlands_companion_shout");
 }
