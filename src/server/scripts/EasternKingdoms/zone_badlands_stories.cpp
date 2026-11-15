@@ -769,6 +769,293 @@ struct npc_badlands_tddc_actor : public ScriptedAI
 };
 
 /*######
+## The Day that Deathwing Came (27713), Theldurin's story (TDDC 1)
+######*/
+
+enum TheldurinStory
+{
+    NPC_DANG_BLASTED_ROCK_ELEMENTAL     = 46467,
+    NPC_TDDC_DEATHWING                  = 46471,    // in human form: 161640 at the end of the trench (phase 293), 161582 on the pillar (310)
+    NPC_TDDC1_FLYING_DEATHWING          = 46484,
+    GO_GOL_DURNED_ROCK_HEAP             = 206108,   // 77 rock walls down the trench (phase 293), doors
+
+    SPELL_TDDC1_THELDURIN_TRANSFORM     = 86621,
+    SPELL_TDDC1_SUMMON_DEATHWING        = 86628,    // the flying Deathwing, personal, 71 yd above the camp
+    SPELL_TDDC1_KNOCKBACK_ELEMENTAL     = 86563,    // 3600 to the target and a 10 yd cone in front, knock back
+
+    // 46466 text groups (broadcast texts, order from the wiki's transcript)
+    TALK_TDDC1_BRIGHT_SHINY_DAY         = 0,        // 46563
+    TALK_TDDC1_DEATHWING_APPEARED       = 1,        // 46564
+    TALK_TDDC1_I_SAID_TO_MYSELF         = 2,        // 46565
+    TALK_TDDC1_YELL_PUNCH_THAT_DRAGON   = 3,        // 46566 (yell)
+    TALK_TDDC1_ANGRY_ELEMENTALS         = 4,        // 46567
+    TALK_TDDC1_I_SAID                   = 5,        // 46568
+    TALK_TDDC1_YELL_ROCK_ELEMENTALS     = 6,        // 46569 (yell)
+    TALK_TDDC1_YELL_PUNCH_YOU_TOO       = 7,        // 46570 (yell)
+    TALK_TDDC1_PUNCH                    = 8,        // 46575-46582, random, about one punch in three
+    TALK_TDDC1_WRONG_WAY                = 9,        // 46595
+
+    EVENT_TDDC1_LINE_SHINY_DAY          = EVENT_STORY_FIRST_SCENE_EVENT,
+    EVENT_TDDC1_DEATHWING_FLIES,
+    EVENT_TDDC1_LINE_APPEARED,
+    EVENT_TDDC1_GROUND_CAMERA,
+    EVENT_TDDC1_YELL_PUNCH_DRAGON,
+    EVENT_TDDC1_LINE_ELEMENTALS,
+    EVENT_TDDC1_LINE_I_SAID,
+    EVENT_TDDC1_YELL_ROCK_ELEMENTALS,
+    EVENT_TDDC1_YELL_PUNCH_YOU_TOO,
+    EVENT_TDDC1_CONTROL,
+    EVENT_TDDC1_PUNCH
+};
+
+// Theldurin's Fist reaches 10 yd (86563's cone and 86564's object search)
+float const TheldurinPunchRange = 10.0f;
+
+// The flying Deathwing's flight (ours: "Deathwing flies into frame and down the scar to the north-east", the wiki). The Sky camera
+// (CameraMode 80) looks from (-7126.9, -2711.3, 253.2) towards (-7110.6, -2726.5, 265.0): north-east and about 28 degrees up, with a
+// vertical field of view of about 44 degrees. From his summon point 71 yd above the camp he enters the frame high, crosses it
+// down the line of the trench (the second point is 29 degrees up, the third 8) and leaves it towards the trench's end
+Position const TheldurinDeathwingFlight[] =
+{
+    { -7085.0f, -2752.0f, 300.0f },
+    { -7020.0f, -2830.0f, 285.0f },
+    { -6930.0f, -2930.0f, 275.0f },
+    { -6820.0f, -3060.0f, 270.0f }
+};
+
+// 46466 - Theldurin the Lost (the player's Theldurin)
+// What the player sees (wiki transcript, broadcast texts 46563-46570, DBC; timings ours): Theldurin's shape at the camp (86621), a
+// bright sunny sky; the Sky camera: "I remember it well.  It was a bright, shiny day...", Deathwing flies over and down the Scar,
+// "...Deathwing appeared!"; the Ground camera on Theldurin: the narration and his three yells; then the player drives Theldurin
+// with one button, Theldurin's Fist (86561): a leap and a punch that knocks elementals back and breaks the rock walls. Kills of
+// the Dang-Blasted Rock Elementals credit the player (the vehicle is his charm). Punching Deathwing, who stands in his ring of
+// flames at the end of the trench, is the last objective: the story ends right there (wiki) and the player is back at the camp.
+struct npc_badlands_theldurin_story : public npc_badlands_story_vehicle
+{
+    npc_badlands_theldurin_story(Creature* creature) : npc_badlands_story_vehicle(creature, QUEST_TDDC_THELDURIN) { }
+
+    void DoAction(int32 action) override
+    {
+        // The leap lands 0.2 s after the cast (5 yd at the jump's speed); the punch comes then
+        if (action == ACTION_TDDC_FIST && !_punched)
+            _events.ScheduleEvent(EVENT_TDDC1_PUNCH, 300ms);
+    }
+
+protected:
+    uint8 WrongWayGroup() const override { return TALK_TDDC1_WRONG_WAY; }
+
+    void StartScene(Player* player) override
+    {
+        me->CastSpell(me, SPELL_TDDC1_THELDURIN_TRANSFORM, true);
+        // The elementals keep their sniffed quest invisibility (49414, type 7): the player and Theldurin see them through See Quest
+        // Invis 1 (86637). Its vehicle form 87785 targets TARGET_UNIT_UNK_105, which this core does not implement, so the vehicle
+        // gets 86637 too; this core's invisible units only see those that detect them, so the elementals see Theldurin by it
+        player->CastSpell(player, SPELL_SEE_QUEST_INVIS_1, true);
+        me->CastSpell(me, SPELL_SEE_QUEST_INVIS_1, true);
+
+        _events.ScheduleEvent(EVENT_TDDC1_LINE_SHINY_DAY, 1s);
+        _events.ScheduleEvent(EVENT_TDDC1_DEATHWING_FLIES, 2s);
+        _events.ScheduleEvent(EVENT_TDDC1_LINE_APPEARED, 5s);
+        _events.ScheduleEvent(EVENT_TDDC1_GROUND_CAMERA, 9s);
+        _events.ScheduleEvent(EVENT_TDDC1_YELL_PUNCH_DRAGON, 13s);
+        _events.ScheduleEvent(EVENT_TDDC1_LINE_ELEMENTALS, 16s);
+        _events.ScheduleEvent(EVENT_TDDC1_LINE_I_SAID, 20s);
+        _events.ScheduleEvent(EVENT_TDDC1_YELL_ROCK_ELEMENTALS, 24s);
+        _events.ScheduleEvent(EVENT_TDDC1_YELL_PUNCH_YOU_TOO, 26s);
+        _events.ScheduleEvent(EVENT_TDDC1_CONTROL, 28s);
+    }
+
+    void SceneEvent(uint32 eventId, Player* player) override
+    {
+        switch (eventId)
+        {
+            case EVENT_TDDC1_LINE_SHINY_DAY:
+                Narrate(TALK_TDDC1_BRIGHT_SHINY_DAY, player);
+                break;
+            case EVENT_TDDC1_DEATHWING_FLIES:
+                player->CastSpell(player, SPELL_TDDC1_SUMMON_DEATHWING, true);
+                if (Creature* deathwing = FindOwnSummon(player, NPC_TDDC1_FLYING_DEATHWING, 120.0f))
+                {
+                    Track(deathwing);
+                    FlyAway(deathwing, TheldurinDeathwingFlight, std::size(TheldurinDeathwingFlight));
+                }
+                break;
+            case EVENT_TDDC1_LINE_APPEARED:
+                Narrate(TALK_TDDC1_DEATHWING_APPEARED, player);
+                break;
+            case EVENT_TDDC1_GROUND_CAMERA:
+                ChangeRiderSeat(player, SEAT_CAMERA_GROUND);
+                Narrate(TALK_TDDC1_I_SAID_TO_MYSELF, player);
+                break;
+            case EVENT_TDDC1_YELL_PUNCH_DRAGON:
+                Say(TALK_TDDC1_YELL_PUNCH_THAT_DRAGON, player);
+                break;
+            case EVENT_TDDC1_LINE_ELEMENTALS:
+                Narrate(TALK_TDDC1_ANGRY_ELEMENTALS, player);
+                break;
+            case EVENT_TDDC1_LINE_I_SAID:
+                Narrate(TALK_TDDC1_I_SAID, player);
+                break;
+            case EVENT_TDDC1_YELL_ROCK_ELEMENTALS:
+                Say(TALK_TDDC1_YELL_ROCK_ELEMENTALS, player);
+                break;
+            case EVENT_TDDC1_YELL_PUNCH_YOU_TOO:
+                Say(TALK_TDDC1_YELL_PUNCH_YOU_TOO, player);
+                break;
+            case EVENT_TDDC1_CONTROL:
+                ChangeRiderSeat(player, SEAT_CONTROL);
+                break;
+            case EVENT_TDDC1_PUNCH:
+                Punch(player);
+                break;
+            default:
+                break;
+        }
+    }
+
+private:
+    // Theldurin's Fist after the leap (86561's two triggered spells are done here, at the landing point: as DBC triggers they
+    // would run at the take-off, 86563 with the vehicle itself as its enemy target): 86563 on the nearest elemental, or Deathwing,
+    // within 10 yd in front, which deals the cone's damage and knocks back; every closed rock wall within 10 yd in front opens
+    // (86564: ACTIVATE_OBJECT, "open"; the walls close again by their template's autoClose). Punching Deathwing gives the last
+    // credit whether or not the punch lands (he is level 87: a level 47 spell rarely hits him) and ends the story 3 s later
+    void Punch(Player* player)
+    {
+        if (_punched || !IsControlling(player))
+            return;
+
+        Unit* target = nullptr;
+        float best = TheldurinPunchRange;
+        Creature* deathwing = nullptr;
+
+        std::list<Creature*> creatures;
+        me->GetCreatureListWithEntryInGrid(creatures, NPC_DANG_BLASTED_ROCK_ELEMENTAL, TheldurinPunchRange + 10.0f);
+        me->GetCreatureListWithEntryInGridAppend(creatures, NPC_TDDC_DEATHWING, TheldurinPunchRange + 20.0f);
+        for (Creature* creature : creatures)
+        {
+            if (!creature->IsAlive() || !me->InSamePhase(creature) || !me->isInFront(creature, float(M_PI)))
+                continue;
+
+            float const dist = me->GetDistance(creature);
+            if (dist > TheldurinPunchRange)
+                continue;
+
+            if (creature->GetEntry() == NPC_TDDC_DEATHWING)
+                deathwing = creature;
+            if (dist <= best)
+            {
+                best = dist;
+                target = creature;
+            }
+        }
+
+        // Set before the cast: its damage on Deathwing asks for a punch again (DamageTaken), which must not run a second one
+        if (deathwing)
+            _punched = true;
+
+        if (target && me->IsValidAttackTarget(target))
+            me->CastSpell(target, SPELL_TDDC1_KNOCKBACK_ELEMENTAL, true);
+
+        std::list<GameObject*> walls;
+        me->GetGameObjectListWithEntryInGrid(walls, GO_GOL_DURNED_ROCK_HEAP, TheldurinPunchRange + 10.0f);
+        for (GameObject* wall : walls)
+            if (wall->GetGoState() == GO_STATE_READY && me->InSamePhase(wall) && me->GetDistance(wall) <= TheldurinPunchRange
+                && (me->isInFront(wall, float(M_PI)) || me->GetExactDist2d(wall) < 4.0f))
+                wall->UseDoorOrButton(0, false, me);
+
+        if (urand(0, 2) == 0)
+            Say(TALK_TDDC1_PUNCH, player);
+
+        if (deathwing)
+        {
+            Credit(player, NPC_TDDC_DEATHWING);
+            EndIn(3s);
+        }
+    }
+
+    bool _punched = false;
+
+public:
+    // Sends a flying actor along a smooth path and lets it go once out of sight
+    static void FlyAway(Creature* actor, Position const* points, size_t count)
+    {
+        actor->SetCanFly(true);
+        actor->SetDisableGravity(true);
+        actor->SetSpeed(MOVE_FLIGHT, 3.0f);
+        actor->SetSpeed(MOVE_RUN, 3.0f);
+
+        std::vector<Position> path;
+        path.push_back(actor->GetPosition());
+        for (size_t i = 0; i < count; ++i)
+            path.push_back(points[i]);
+
+        actor->GetMotionMaster()->Clear();
+        actor->GetMotionMaster()->MoveSmoothPath(1, path.data(), path.size(), false, true);
+        actor->DespawnOrUnsummon(30 * IN_MILLISECONDS);
+    }
+};
+
+// 86561 - Theldurin's Fist (46466's only button: "Plant an angry fist in any obstacle that gets in your way.")
+// The leap (JUMP_DEST 5 yd in front) stays the spell's; its two triggers are left to the vehicle, which punches at the landing
+// point (npc_badlands_theldurin_story::Punch)
+class spell_badlands_theldurins_fist : public SpellScript
+{
+    PrepareSpellScript(spell_badlands_theldurins_fist);
+
+    void PreventTrigger(SpellEffIndex effIndex)
+    {
+        PreventHitDefaultEffect(effIndex);
+    }
+
+    void HandleAfterCast()
+    {
+        if (Creature* vehicle = GetCaster()->ToCreature())
+            if (vehicle->GetEntry() == NPC_THELDURIN_VEHICLE && vehicle->IsAIEnabled)
+                vehicle->AI()->DoAction(ACTION_TDDC_FIST);
+    }
+
+    void Register() override
+    {
+        OnEffectLaunch += SpellEffectFn(spell_badlands_theldurins_fist::PreventTrigger, EFFECT_1, SPELL_EFFECT_TRIGGER_SPELL);
+        OnEffectLaunch += SpellEffectFn(spell_badlands_theldurins_fist::PreventTrigger, EFFECT_2, SPELL_EFFECT_TRIGGER_SPELL);
+        OnEffectLaunchTarget += SpellEffectFn(spell_badlands_theldurins_fist::PreventTrigger, EFFECT_1, SPELL_EFFECT_TRIGGER_SPELL);
+        OnEffectLaunchTarget += SpellEffectFn(spell_badlands_theldurins_fist::PreventTrigger, EFFECT_2, SPELL_EFFECT_TRIGGER_SPELL);
+        AfterCast += SpellCastFn(spell_badlands_theldurins_fist::HandleAfterCast);
+    }
+};
+
+// 46471 - Deathwing (in human form: 161640 at the end of Theldurin's trench, phase 293; 161582 on Martek's pillar, phase 310)
+// "He just stands there" (comments 2011-01-24, 2010-11-25): never moves, never attacks, never falls (858 million health in the
+// TDBs; nothing takes it off him here). Theldurin's punch reaches him (the template loses NON_ATTACKABLE and IMMUNE_TO_PC, as
+// both TDBs have none), and any damage from a Theldurin also gives the punch's credit
+struct npc_badlands_tddc_deathwing : public ScriptedAI
+{
+    npc_badlands_tddc_deathwing(Creature* creature) : ScriptedAI(creature) { }
+
+    void Reset() override
+    {
+        me->SetReactState(REACT_PASSIVE);
+    }
+
+    void AttackStart(Unit* /*who*/) override { }
+    void MoveInLineOfSight(Unit* /*who*/) override { }
+    void EnterEvadeMode(EvadeReason /*why*/) override
+    {
+        me->CombatStop(true);
+    }
+
+    void DamageTaken(Unit* attacker, uint32& damage) override
+    {
+        damage = 0;
+
+        if (attacker && attacker->GetEntry() == NPC_THELDURIN_VEHICLE && attacker->IsAIEnabled)
+            attacker->ToCreature()->AI()->DoAction(ACTION_TDDC_FIST);
+    }
+
+    void UpdateAI(uint32 /*diff*/) override { }
+};
+
+/*######
 ## A player who logged out inside a story was saved where the vehicle stood (the auras are DONT_SAVE). At login whatever a story
 ## put on him is taken off, and one saved in the air (Martek's hog flies) is set down at the camp rather than dropped: ours.
 ######*/
@@ -825,5 +1112,8 @@ void AddSC_badlands_stories()
 {
     new creature_script<npc_badlands_storyteller>("npc_badlands_storyteller");
     new creature_script<npc_badlands_tddc_actor>("npc_badlands_tddc_actor");
+    new creature_script<npc_badlands_theldurin_story>("npc_badlands_theldurin_story");
+    new spell_script<spell_badlands_theldurins_fist>("spell_badlands_theldurins_fist");
+    new creature_script<npc_badlands_tddc_deathwing>("npc_badlands_tddc_deathwing");
     new player_badlands_stories();
 }
