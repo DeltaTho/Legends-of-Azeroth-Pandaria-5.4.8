@@ -344,6 +344,7 @@ void AddSC_eastern_plaguelands_caravan();
 void AddSC_eastern_plaguelands_chapel();
 void AddSC_eastern_plaguelands_darrowshire();
 void AddSC_eastern_plaguelands_finale();
+void AddSC_badlands_companions();
 void AddSC_eversong_woods();
 void AddSC_ghostlands();
 void AddSC_gilneas();
@@ -1399,6 +1400,7 @@ void AddEasternKingdomsScripts()
     AddSC_eastern_plaguelands_chapel();
     AddSC_eastern_plaguelands_darrowshire();
     AddSC_eastern_plaguelands_finale();
+    AddSC_badlands_companions();
     AddSC_eversong_woods();
     AddSC_ghostlands();
     AddSC_gilneas();
