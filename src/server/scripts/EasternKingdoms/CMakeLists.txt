@@ -110,6 +110,7 @@ set(scripts_STAT_SRCS
   EasternKingdoms/ZulGurub/zulgurub.h
   EasternKingdoms/zone_wetlands.cpp
   EasternKingdoms/zone_arathi_highlands.cpp
+  EasternKingdoms/zone_badlands_stories.cpp
   EasternKingdoms/Gnomeregan/instance_gnomeregan.cpp
   EasternKingdoms/Gnomeregan/gnomeregan.cpp
   EasternKingdoms/Gnomeregan/gnomeregan.h
