@@ -94,10 +94,11 @@ struct npc_badlands_blam_turret : public VehicleAI
             if (!player)
                 return;
 
-            // R4: a bot never runs the waves (they credit their master's group instead)
+            // R4: a bot never runs the waves (bots get the waves of a real rider beside them). Put off on the next update, not
+            // from inside Vehicle::AddPassenger.
             if (player->GetSession()->IsBot())
             {
-                player->ExitVehicle();
+                _botGUID = player->GetGUID();
                 return;
             }
 
@@ -197,6 +198,14 @@ struct npc_badlands_blam_turret : public VehicleAI
     {
         VehicleAI::UpdateAI(diff);
 
+        if (!_botGUID.IsEmpty())
+        {
+            if (Player* bot = ObjectAccessor::GetPlayer(*me, _botGUID))
+                if (bot->GetVehicleBase() == me)
+                    bot->ExitVehicle();
+            _botGUID.Clear();
+        }
+
         _events.Update(diff);
         while (uint32 eventId = _events.ExecuteEvent())
         {
@@ -244,6 +253,7 @@ struct npc_badlands_blam_turret : public VehicleAI
 private:
     EventMap _events;
     ObjectGuid _riderGUID;
+    ObjectGuid _botGUID;
     GuidVector _troggs;
     uint8 _wave = 0;
     uint8 _burst = 0;
