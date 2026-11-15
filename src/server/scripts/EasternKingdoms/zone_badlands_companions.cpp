@@ -31,6 +31,7 @@
 // - All three follow, fight what the player fights and whatever hostile comes within 40 yd of them, and obey Passive / Defensive
 //   (/petpassive, /petdefensive) and Follow / Attack given to the leader.
 // - A viking helmet on the player while the dwarves are out (Viking Helmet 87391; the Horde twin Ex-KEF: Active Aura 87592).
+// - The Bad Dogs ride Mechano-Hogs while the player is mounted; the dwarves walk.
 // - They vanish in Dustbelch Grotto, the Scar of the Worldbreaker or anywhere outside the arc's areas and come back on return; a
 //   companion that dies comes back, at full health, once the fight is over; after a relog, a death and resurrection or a Dismiss
 //   they come back. A hunter cannot call his pet while Eric / Amakkar holds the pet slot (Spell::CheckCast); a pet summoned
@@ -369,7 +370,8 @@ class spell_badlands_companion_aura : public AuraScript
 // - Follow given to the leader brings all three back for a moment (3 s without picking a fight, ours).
 // - Left more than 60 yd behind (the player rode on, or a same-map teleport), brought to the player (active, so their grid keeps
 //   updating). A dead one is gone after 5 s; the aura's check brings him back after the fight.
-// - The leader keeps the helmet aura on the player (87391 / 87592: put back after an evade).
+// - The leader keeps the helmet aura on the player (87391 / 87592: put back after an evade); the Bad Dogs ride Mechano-Hogs while
+//   the player is mounted (C15).
 struct npc_badlands_companion : public ScriptedAI
 {
     npc_badlands_companion(Creature* creature) : ScriptedAI(creature) { }
@@ -459,6 +461,9 @@ struct npc_badlands_companion : public ScriptedAI
         if (Player* owner = GetOwnerPlayer())
             if (owner->IsMounted() && who->GetVictim() != me)
                 return;
+
+        if (me->IsMounted())
+            me->Dismount();
 
         ScriptedAI::AttackStart(who);
     }
@@ -561,6 +566,13 @@ struct npc_badlands_companion : public ScriptedAI
             _speedSynced = false;
         }
 
+        if (_trio->Hogs)
+        {
+            if (owner->IsMounted() && !me->IsMounted() && !me->IsInCombat())
+                me->Mount(DISPLAY_MECHANO_HOG);
+            else if (!owner->IsMounted() && me->IsMounted())
+                me->Dismount();
+        }
         return true;
     }
 
