@@ -56,6 +56,7 @@
 #include "TemporarySummon.h"
 #include "SpellAuras.h"
 #include "WorldSession.h"
+#include "CreatureTextMgr.h"
 
 enum BadlandsTitanGames
 {
@@ -836,6 +837,288 @@ struct go_badlands_titan_slab : public GameObjectAI
     }
 };
 
+/* Return to Blam (27794 / 27888): the purification scene at Agmond's End after the hand-in.
+   Sourced: the hand-in casts 87203 Summon Eye (RewardSpell, or RewardDisplaySpell, Player::RewardQuest) - the Eye of the
+   Watchers 46833 in front of the player, personal (SummonProperties 2993); Blam: "Hey, look! It's flying!" (BroadcastText 47050,
+   his creature_text group 2, written by the Blam data commit); the Eye's seven lines 46896-46902 in this order; it hovers over the
+   scalding whelp corpse, the wild black dragon egg and Nyxondra's egg (87186 / 87196 / 87197 at their spell_target_position
+   points), black smoke rises from each (Summon Corruption 87207-87209, the corruption 46836 with 87206), the three become the
+   Purified Black Dragon Egg (87218 at the corpse's point), and the Eye flies away toward the tomb (comments, wiki).
+   Ours: the timings, the hover height (3 yd), the flight north-east and the despawns; the player casts 87186 (its marker aura goes
+   on him, so the static egg at the camp, hidden while he has it, shows when the scene ends and takes the summoned egg's place);
+   no scene for a playerbot. */
+enum BadlandsReturnToBlam
+{
+    NPC_DR_HIERONYMUS_BLAM          = 46664,
+    NPC_SCALDING_WHELP_CORPSE       = 46826,
+    NPC_WILD_BLACK_DRAGON_EGG       = 46828,
+    NPC_NYXONDRAS_EGG               = 46829,
+    NPC_BLACK_DRAGON_CORRUPTION     = 46836,
+
+    SPELL_SUMMON_WHELP_CORPSE_AURA  = 87186,
+    SPELL_SUMMON_WILD_EGG           = 87196,
+    SPELL_SUMMON_NYXONDRAS_EGG      = 87197,
+    SPELL_EYE_VISUAL                = 87199,
+    SPELL_CORRUPTION_VISUAL         = 87206,
+    SPELL_SUMMON_CORRUPTION_1       = 87207,
+    SPELL_SUMMON_CORRUPTION_2       = 87208,
+    SPELL_SUMMON_CORRUPTION_3       = 87209,
+    SPELL_SUMMON_VIABLE_EGG         = 87218,
+
+    SAY_BLAM_IT_IS_FLYING           = 2,    // Blam's group 2 (BroadcastText 47050, personal)
+    SAY_EYE_BOOT_UP                 = 0,    // 46896
+    SAY_EYE_OBJECTIVE               = 1,    // 46897
+    SAY_EYE_ANOMALY                 = 2,    // 46898
+    SAY_EYE_EXCISED                 = 3,    // 46899, said twice
+    SAY_EYE_REASSEMBLE              = 4,    // 46900
+    SAY_EYE_VIABLE                  = 5,    // 46901
+    SAY_EYE_COMPLETE                = 6,    // 46902
+
+    EVENT_EYE_BLAM = 1,
+    EVENT_EYE_BOOT_UP,
+    EVENT_EYE_OBJECTIVE,
+    EVENT_EYE_TO_CORPSE,
+    EVENT_EYE_CORPSE,
+    EVENT_EYE_TO_WILD_EGG,
+    EVENT_EYE_WILD_EGG,
+    EVENT_EYE_TO_NYXONDRAS_EGG,
+    EVENT_EYE_NYXONDRAS_EGG,
+    EVENT_EYE_REASSEMBLE,
+    EVENT_EYE_VIABLE,
+    EVENT_EYE_COMPLETE,
+    EVENT_EYE_END,
+};
+
+// spell_target_position of 87186 / 87196 / 87197 (the corpse's point is 87218's too)
+Position const BlamWhelpCorpsePos   = { -7009.21f, -3344.54f, 241.687f };
+Position const BlamWildEggPos       = { -7007.68f, -3341.68f, 241.719f };
+Position const BlamNyxondrasEggPos  = { -7008.43f, -3337.17f, 241.738f };
+float const EyeHoverHeight          = 3.0f;
+
+// 46833 Eye of the Watchers, summoned by the player at the Return to Blam hand-in; runs the scene
+struct npc_badlands_eye_of_the_watchers : public ScriptedAI
+{
+    npc_badlands_eye_of_the_watchers(Creature* creature) : ScriptedAI(creature) { }
+
+    void IsSummonedBy(Unit* summoner) override
+    {
+        Player* player = summoner->ToPlayer();
+        if (!player || player->GetSession()->IsBot())
+        {
+            _done = true;
+            me->DespawnOrUnsummon();
+            return;
+        }
+
+        _playerGUID = player->GetGUID();
+        me->SetReactState(REACT_PASSIVE);
+        me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_PC | UNIT_FLAG_IMMUNE_TO_NPC);
+        me->SetCanFly(true);
+        me->SetDisableGravity(true);
+        DoCastSelf(SPELL_EYE_VISUAL, true);
+
+        // The marker on the player and the corpse (his summon); the eggs are the Eye's, private to him through it
+        player->CastSpell(player, SPELL_SUMMON_WHELP_CORPSE_AURA, true);
+        // Duration -1 in the DBC: a scene frozen and unloaded with its grid (the player rode off) never reaches Finish, and the
+        // marker would keep the camp's static egg hidden for the session. A minute covers the 52 s scene.
+        if (Aura* marker = player->GetAura(SPELL_SUMMON_WHELP_CORPSE_AURA))
+        {
+            marker->SetMaxDuration(60 * IN_MILLISECONDS);
+            marker->SetDuration(60 * IN_MILLISECONDS);
+        }
+        std::list<TempSummon*> corpses;
+        player->GetSummons(corpses, NPC_SCALDING_WHELP_CORPSE);
+        for (TempSummon* corpse : corpses)
+            _actors.push_back(corpse->GetGUID());
+        DoCastSelf(SPELL_SUMMON_WILD_EGG, true);
+        DoCastSelf(SPELL_SUMMON_NYXONDRAS_EGG, true);
+
+        me->GetMotionMaster()->MovePoint(0, me->GetPositionX(), me->GetPositionY(), me->GetPositionZ() + 2.0f, false);
+
+        _events.ScheduleEvent(EVENT_EYE_BLAM, 1500);
+        _events.ScheduleEvent(EVENT_EYE_BOOT_UP, 4000);
+        _events.ScheduleEvent(EVENT_EYE_OBJECTIVE, 8000);
+        _events.ScheduleEvent(EVENT_EYE_TO_CORPSE, 11000);
+        _events.ScheduleEvent(EVENT_EYE_CORPSE, 14000);
+        _events.ScheduleEvent(EVENT_EYE_TO_WILD_EGG, 20000);
+        _events.ScheduleEvent(EVENT_EYE_WILD_EGG, 23000);
+        _events.ScheduleEvent(EVENT_EYE_TO_NYXONDRAS_EGG, 28000);
+        _events.ScheduleEvent(EVENT_EYE_NYXONDRAS_EGG, 31000);
+        _events.ScheduleEvent(EVENT_EYE_REASSEMBLE, 36000);
+        _events.ScheduleEvent(EVENT_EYE_VIABLE, 40000);
+        _events.ScheduleEvent(EVENT_EYE_COMPLETE, 44000);
+        _events.ScheduleEvent(EVENT_EYE_END, 52000);
+    }
+
+    void JustSummoned(Creature* summon) override
+    {
+        if (summon->GetEntry() == NPC_BLACK_DRAGON_CORRUPTION)
+            ++_corruptions;
+        _actors.push_back(summon->GetGUID());
+    }
+
+    void AttackStart(Unit* /*who*/) override { }
+    void MoveInLineOfSight(Unit* /*who*/) override { }
+    void EnterEvadeMode(EvadeReason /*why*/) override { }
+
+    // The player's logout or map change unsummons the Eye (his summon) without the scene's end
+    void Unsummoned() override
+    {
+        Finish(false);
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        if (_done)
+            return;
+
+        Player* player = ObjectAccessor::GetPlayer(*me, _playerGUID);
+        if (!player || !player->IsInMap(me))
+        {
+            Finish(true);
+            return;
+        }
+
+        _events.Update(diff);
+        while (uint32 eventId = _events.ExecuteEvent())
+        {
+            switch (eventId)
+            {
+                case EVENT_EYE_BLAM:
+                    if (Creature* blam = me->FindNearestCreature(NPC_DR_HIERONYMUS_BLAM, 40.0f))
+                        sCreatureTextMgr->SendChat(blam, SAY_BLAM_IT_IS_FLYING, player);
+                    break;
+                case EVENT_EYE_BOOT_UP:
+                    Talk(SAY_EYE_BOOT_UP, player);
+                    break;
+                case EVENT_EYE_OBJECTIVE:
+                    Talk(SAY_EYE_OBJECTIVE, player);
+                    break;
+                case EVENT_EYE_TO_CORPSE:
+                    HoverOver(BlamWhelpCorpsePos);
+                    break;
+                case EVENT_EYE_CORPSE:
+                    Talk(SAY_EYE_ANOMALY, player);
+                    Corrupt(SPELL_SUMMON_CORRUPTION_1, BlamWhelpCorpsePos);
+                    break;
+                case EVENT_EYE_TO_WILD_EGG:
+                    Talk(SAY_EYE_EXCISED, player);
+                    HoverOver(BlamWildEggPos);
+                    break;
+                case EVENT_EYE_WILD_EGG:
+                    Corrupt(SPELL_SUMMON_CORRUPTION_2, BlamWildEggPos);
+                    break;
+                case EVENT_EYE_TO_NYXONDRAS_EGG:
+                    Talk(SAY_EYE_EXCISED, player);
+                    HoverOver(BlamNyxondrasEggPos);
+                    break;
+                case EVENT_EYE_NYXONDRAS_EGG:
+                    Corrupt(SPELL_SUMMON_CORRUPTION_3, BlamNyxondrasEggPos);
+                    break;
+                case EVENT_EYE_REASSEMBLE:
+                    Talk(SAY_EYE_REASSEMBLE, player);
+                    for (ObjectGuid const& guid : _actors)
+                        if (Creature* actor = ObjectAccessor::GetCreature(*me, guid))
+                            if (actor->GetEntry() != NPC_BLACK_DRAGON_CORRUPTION)
+                                actor->DespawnOrUnsummon();
+                    DoCastSelf(SPELL_SUMMON_VIABLE_EGG, true);
+                    break;
+                case EVENT_EYE_VIABLE:
+                    Talk(SAY_EYE_VIABLE, player);
+                    break;
+                case EVENT_EYE_COMPLETE:
+                    Talk(SAY_EYE_COMPLETE, player);
+                    // Off toward the Tomb of the Watchers, north-east of the camp
+                    me->GetMotionMaster()->MovePoint(0, me->GetPositionX() + 25.0f, me->GetPositionY() - 25.0f, me->GetPositionZ() + 15.0f, false);
+                    break;
+                case EVENT_EYE_END:
+                    Finish(true);
+                    return;
+                default:
+                    break;
+            }
+        }
+    }
+
+private:
+    void HoverOver(Position const& pos)
+    {
+        me->GetMotionMaster()->MovePoint(0, pos.GetPositionX(), pos.GetPositionY(), pos.GetPositionZ() + EyeHoverHeight, false);
+    }
+
+    // DEST_NEARBY_ENTRY picks the actor through the spell's conditions; if it found none, the smoke rises there all the same
+    void Corrupt(uint32 spellId, Position const& pos)
+    {
+        uint32 before = _corruptions;
+        DoCastSelf(spellId, true);
+        if (_corruptions == before)
+            me->SummonCreature(NPC_BLACK_DRAGON_CORRUPTION, pos, TEMPSUMMON_TIMED_DESPAWN, 6s, 0, me->GetPrivateObjectOwner());
+    }
+
+    // Everything of the scene goes; the marker goes last, so the camp's static egg shows where the summoned one stood
+    void Finish(bool despawnSelf)
+    {
+        if (_done && despawnSelf)
+            return;
+        if (!_done)
+        {
+            _done = true;
+            _events.Reset();
+            for (ObjectGuid const& guid : _actors)
+                if (Creature* actor = ObjectAccessor::GetCreature(*me, guid))
+                    actor->DespawnOrUnsummon();
+            _actors.clear();
+
+            if (Player* player = ObjectAccessor::GetPlayer(*me, _playerGUID))
+                if (player->IsInWorld() && !player->IsDuringRemoveFromWorld())
+                    player->RemoveAurasDueToSpell(SPELL_SUMMON_WHELP_CORPSE_AURA);
+        }
+        if (despawnSelf)
+            me->DespawnOrUnsummon();
+    }
+
+    EventMap _events;
+    ObjectGuid _playerGUID;
+    GuidVector _actors;
+    uint32 _corruptions = 0;
+    bool _done = false;
+};
+
+// 46826 Scalding Whelp Corpse, 46828 Wild Black Dragon Egg, 46829 Nyxondra's Egg: props of the scene. Faction 16 with no AI they
+// would get AggressorAI and attack the player they belong to; IMMUNE_TO_PC does not stop that in this core.
+struct npc_badlands_blam_scene_actor : public ScriptedAI
+{
+    npc_badlands_blam_scene_actor(Creature* creature) : ScriptedAI(creature)
+    {
+        me->SetReactState(REACT_PASSIVE);
+    }
+
+    void AttackStart(Unit* /*who*/) override { }
+    void MoveInLineOfSight(Unit* /*who*/) override { }
+    void EnterEvadeMode(EvadeReason /*why*/) override { }
+    void UpdateAI(uint32 /*diff*/) override { }
+};
+
+// 46836 Black Dragon Corruption: the black smoke rising from a prop
+struct npc_badlands_black_dragon_corruption : public ScriptedAI
+{
+    npc_badlands_black_dragon_corruption(Creature* creature) : ScriptedAI(creature)
+    {
+        me->SetReactState(REACT_PASSIVE);
+    }
+
+    void IsSummonedBy(Unit* /*summoner*/) override
+    {
+        DoCastSelf(SPELL_CORRUPTION_VISUAL, true);
+        me->DespawnOrUnsummon(6000);
+    }
+
+    void AttackStart(Unit* /*who*/) override { }
+    void MoveInLineOfSight(Unit* /*who*/) override { }
+    void EnterEvadeMode(EvadeReason /*why*/) override { }
+    void UpdateAI(uint32 /*diff*/) override { }
+};
+
 // 206374 Trove of the Watchers (The Titans' Trove 27912 / 27913 end here, Return to Blam 27794 / 27888 start here). TDB 4.4.2
 // gives the chest GO_FLAG_INTERACT_COND, i.e. usable only by a player it has a quest for; this core never sends the
 // GO_DYNFLAG_LO_ACTIVATE that lifts the flag for a quest giver object (GameObject::BuildValuesUpdate sets it for chests and
@@ -859,4 +1142,7 @@ void AddSC_badlands_titans()
     new creature_script<npc_badlands_titan_game_piece>("npc_badlands_titan_game_piece");
     RegisterGameObjectAI(go_badlands_titan_slab);
     RegisterGameObjectAI(go_badlands_trove_of_the_watchers);
+    new creature_script<npc_badlands_eye_of_the_watchers>("npc_badlands_eye_of_the_watchers");
+    new creature_script<npc_badlands_blam_scene_actor>("npc_badlands_blam_scene_actor");
+    new creature_script<npc_badlands_black_dragon_corruption>("npc_badlands_black_dragon_corruption");
 }
