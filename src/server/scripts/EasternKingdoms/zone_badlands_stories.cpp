@@ -1476,6 +1476,466 @@ public:
 };
 
 /*######
+## The Day that Deathwing Came: What Really Happened (27715), Martek's story (TDDC 3)
+######*/
+
+enum MartekStory
+{
+    NPC_MARTEK_THE_AWESOME              = 46497,
+    NPC_NIGHT_ELF_ADMIRER               = 47123,
+    NPC_HUMAN_ADMIRER                   = 47124,
+    NPC_ORC_ADMIRER                     = 47125,
+    NPC_BLOOD_ELF_ADMIRER               = 47126,
+    NPC_TDDC3_THELDURIN                 = 47157,
+    NPC_TDDC3_GIANT_LUCIEN              = 47163,
+    NPC_CAVE_IN_TRIGGER                 = 47128,
+    NPC_TDDC3_CANYON_CREDIT             = 47178,
+    NPC_TDDC3_MOUNTAIN_CREDIT           = 47179,
+    NPC_TDDC3_ADMIRER_CREDIT            = 47123,    // "Choose an admirer to save" (47124-47126 have KillCredit1 47123)
+
+    MENU_TDDC3_ADMIRER                  = 12204,
+
+    SPELL_TDDC3_HOG_TRANSFORM           = 86680,
+    SPELL_TDDC3_SUMMON_NIGHT_ELF        = 87823,
+    SPELL_TDDC3_SUMMON_HUMAN            = 87824,
+    SPELL_TDDC3_SUMMON_ORC              = 87825,
+    SPELL_TDDC3_SUMMON_BLOOD_ELF        = 87826,
+    SPELL_CAVE_IN                       = 87831,    // the trigger: a Cave In Stalker where its target stands, 15 s
+    SPELL_CAVE_IN_PERIODIC              = 87842,    // the stalker: rocks every few seconds, 127 in 6 yd
+    SPELL_TDDC3_FLY                     = 87853,
+    SPELL_TDDC3_SUMMON_THELDURIN        = 87857,
+    SPELL_TDDC3_SUMMON_LUCIEN           = 87858,
+    SPELL_TDDC3_PUNCH_DEATHWING         = 87912,
+
+    SEAT_HOG_MARTEK                     = 3,        // VehicleSeat 8765: the visible rider
+    SEAT_HOG_ADMIRER                    = 4,        // VehicleSeat 8916 (87830 / 87847-87849 "Ride Vehicle - Seat 5")
+
+    // 46497 text groups (the narration: "Martek Boss Whisper" spells 04a-13 and the on-accept lines; broadcast texts 47198-47216)
+    TALK_TDDC3_BLOOD_RAINED             = 0,        // 47198
+    TALK_TDDC3_HOT_BABES                = 1,        // 47199
+    TALK_TDDC3_ROOM_FOR_ONE             = 2,        // 47200
+    TALK_TDDC3_PICKED_ORC               = 3,        // 47201
+    TALK_TDDC3_PICKED_HUMAN             = 4,        // 47202
+    TALK_TDDC3_PICKED_NIGHT_ELF         = 5,        // 47203
+    TALK_TDDC3_PICKED_BLOOD_ELF         = 6,        // 47204
+    TALK_TDDC3_RODE_OFF                 = 7,        // 47205
+    TALK_TDDC3_CANYON_END               = 8,        // 47206
+    TALK_TDDC3_HELPFUL_EARLIER          = 9,        // 47207
+    TALK_TDDC3_FLEW_TO_PILLAR           = 10,       // 47208
+    TALK_TDDC3_MOMENT_ORC               = 11,       // 47213
+    TALK_TDDC3_MOMENT_HUMAN             = 12,       // 47214
+    TALK_TDDC3_MOMENT_NIGHT_ELF         = 13,       // 47215
+    TALK_TDDC3_MOMENT_BLOOD_ELF         = 14,       // 47216
+    TALK_TDDC3_ATOP_THE_PILLAR          = 15,       // 47209
+    TALK_TDDC3_STOP_IT_THELDURIN        = 16,       // 47210
+    TALK_TDDC3_QUIT_INTERRUPTING        = 17,       // 47211
+    TALK_TDDC3_KNIFE_FIGHT              = 18,       // 47212
+    TALK_TDDC3_WRONG_WAY                = 19,       // 46595
+
+    // The admirers (47123-47126)
+    TALK_ADMIRER_PICKED                 = 0,        // Woo hoo!  Martek picked me! (47230)
+    TALK_ADMIRER_GOODBYE                = 1,        // 47222-47229
+    // 47157 Theldurin
+    TALK_TDDC3_THELDURIN_PUNCH          = 0,        // I'm gonna punch that dragon in the face! (47192, yell)
+
+    EVENT_TDDC3_LINE_BLOOD              = EVENT_STORY_FIRST_SCENE_EVENT,
+    EVENT_TDDC3_GROUND_CAMERA,
+    EVENT_TDDC3_LINE_ROOM_FOR_ONE,
+    EVENT_TDDC3_CONTROL,
+    EVENT_TDDC3_GOODBYES,
+    EVENT_TDDC3_LINE_RODE_OFF,
+    EVENT_TDDC3_FLY,
+    EVENT_TDDC3_LINE_FLEW,
+    EVENT_TDDC3_LINE_MOMENT,
+    EVENT_TDDC3_THELDURIN_COMES,
+    EVENT_TDDC3_THELDURIN_PUNCHES,
+    EVENT_TDDC3_LINE_STOP_IT,
+    EVENT_TDDC3_LUCIEN_COMES,
+    EVENT_TDDC3_LINE_INTERRUPTING,
+    EVENT_TDDC3_LINE_KNIFE_FIGHT
+};
+
+struct AdmirerInfo
+{
+    uint32 Entry;
+    uint32 SummonSpell;
+    uint8 PickedLine;
+    uint8 MomentLine;
+};
+
+AdmirerInfo const Admirers[] =
+{
+    // The whisper spells' letters (04a-d, 09a-d) carry no race; the texts do (stories U1): any fixed mapping, this one by race
+    { NPC_NIGHT_ELF_ADMIRER, SPELL_TDDC3_SUMMON_NIGHT_ELF, TALK_TDDC3_PICKED_NIGHT_ELF, TALK_TDDC3_MOMENT_NIGHT_ELF },
+    { NPC_HUMAN_ADMIRER,     SPELL_TDDC3_SUMMON_HUMAN,     TALK_TDDC3_PICKED_HUMAN,     TALK_TDDC3_MOMENT_HUMAN },
+    { NPC_ORC_ADMIRER,       SPELL_TDDC3_SUMMON_ORC,       TALK_TDDC3_PICKED_ORC,       TALK_TDDC3_MOMENT_ORC },
+    { NPC_BLOOD_ELF_ADMIRER, SPELL_TDDC3_SUMMON_BLOOD_ELF, TALK_TDDC3_PICKED_BLOOD_ELF, TALK_TDDC3_MOMENT_BLOOD_ELF }
+};
+
+// The end of the canyon (TDB 1210's map area of "Ride to the end of the canyon"; radius ours) and the pillar top with Deathwing
+// (161582; radius and height ours)
+Position const MartekCanyonEnd = { -6764.0f, -3179.0f, 223.0f };
+float const MartekCanyonRadius = 15.0f;
+Position const MartekPillarTop = { -6647.12f, -3108.92f, 340.91f };
+float const MartekPillarRadius = 25.0f;
+float const MartekPillarMinZ = 325.0f;
+// Unpicked admirer: Martek reminds the player once this far from the camp (ours)
+float const MartekReminderDistance = 40.0f;
+// Theldurin runs to Deathwing; the giant Lucien walks round the pillar from the east (ours: "walks around the side of the pillar")
+Position const MartekTheldurinPunchSpot = { -6651.5f, -3109.2f, 341.0f };
+// From his summon point at the pillar's south-east foot (y more negative = east) down to the low ground south of it, along its
+// foot and round to its west side, about 300 yd, run at his 4.29 rate in some 10 s. Points 20-25 yd apart at the terrain's height
+// (ground.py on the 5.4.8 maps; no model surface on the way): the earlier two points sat 25 and 86 yd inside the rock
+Position const MartekLucienWalk[] =
+{
+    { -6676.7f, -3215.8f, 258.1f },
+    { -6700.0f, -3222.0f, 224.2f },
+    { -6721.0f, -3201.0f, 225.0f },
+    { -6742.0f, -3180.0f, 223.2f },
+    { -6744.0f, -3156.7f, 226.6f },
+    { -6746.0f, -3133.3f, 230.8f },
+    { -6748.0f, -3110.0f, 238.4f },
+    { -6744.7f, -3088.3f, 255.2f },
+    { -6741.3f, -3066.7f, 266.4f },
+    { -6738.0f, -3045.0f, 259.9f },
+    { -6714.0f, -3031.5f, 256.9f },
+    { -6690.0f, -3018.0f, 262.9f }
+};
+
+// 46501 - Martek's Hog (the player rides it with Martek the Awesome)
+// What the player sees (wiki transcript, broadcast texts 47198-47216 and 47222-47230, comments, DBC; timings ours): blood rain
+// (86675); the hog looks like the Mechano-Hog (86680) with Martek the Awesome on it; four admirers beside it (87823-87826). The Sky
+// camera: "The day that Deathwing came, blood rained from the skies.", the Ground camera: "...showing my motorcycle to some hot
+// babes...", "...I only had room to rescue one of them." Then the player drives, with Speed Boost (87851): talking to one admirer
+// ("Hop in, baby.") puts her (him) on the back ("Woo hoo!  Martek picked me!"), "Obviously, I picked the <race>." (credit) and the
+// others say goodbye and go; "We rode off down the canyon, careful to avoid falling rocks." (the Cave In Triggers along the
+// trench). At the end of the canyon (credit) "...my motorcycle could fly.", "That would have been helpful to know earlier." and
+// the hog flies (87853); "I flew to the top of the pillar...", "...a tender moment with the <admirer>." On the pillar top, close to
+// Deathwing (credit) "Atop the pillar, I saw him: Deathwing."; Theldurin appears, yells and punches Deathwing; "Hey, stop it
+// Theldurin!  This is my story!"; a giant Lucien walks round the pillar; "Cut it out guys!  Quit interrupting!"; "Fine.  You don't
+// get to hear about how I beat Deathwing in a knife fight.  Your loss." (the last credit), and the story ends at the camp.
+struct npc_badlands_martek_story : public npc_badlands_story_vehicle
+{
+    npc_badlands_martek_story(Creature* creature) : npc_badlands_story_vehicle(creature, QUEST_TDDC_MARTEK) { }
+
+    // An admirer the player talked to ("Hop in, baby."): the first one rides along
+    void SetGUID(ObjectGuid guid, int32 id) override
+    {
+        if (id != DATA_TDDC_ADMIRER || !_pickedGUID.IsEmpty())
+            return;
+
+        Player* player = GetPlayer();
+        Creature* admirer = GetActor(guid);
+        AdmirerInfo const* info = admirer ? GetAdmirerInfo(admirer->GetEntry()) : nullptr;
+        if (!player || !info || !IsControlling(player))
+            return;
+
+        _pickedGUID = guid;
+        _picked = info;
+        admirer->EnterVehicle(me, SEAT_HOG_ADMIRER);
+        sCreatureTextMgr->SendChat(admirer, TALK_ADMIRER_PICKED, player);
+        Narrate(info->PickedLine, player);
+        Credit(player, NPC_TDDC3_ADMIRER_CREDIT);
+        _events.ScheduleEvent(EVENT_TDDC3_GOODBYES, 2s);
+        _events.ScheduleEvent(EVENT_TDDC3_LINE_RODE_OFF, 6s);
+    }
+
+protected:
+    uint8 WrongWayGroup() const override { return TALK_TDDC3_WRONG_WAY; }
+
+    Creature* Narrator() override
+    {
+        if (Vehicle* kit = me->GetVehicleKit())
+            if (Unit* martek = kit->GetPassenger(SEAT_HOG_MARTEK))
+                return martek->ToCreature();
+        return nullptr;
+    }
+
+    void StartScene(Player* player) override
+    {
+        me->CastSpell(me, SPELL_TDDC3_HOG_TRANSFORM, true);
+
+        // Martek the Awesome on the hog's visible seat ("Martek the Awesome" on the bike, with Doomhammer: comments)
+        if (Creature* martek = me->SummonCreature(NPC_MARTEK_THE_AWESOME, me->GetPosition(), TEMPSUMMON_MANUAL_DESPAWN))
+        {
+            Track(martek);
+            martek->EnterVehicle(me, SEAT_HOG_MARTEK);
+        }
+
+        for (AdmirerInfo const& info : Admirers)
+        {
+            player->CastSpell(player, info.SummonSpell, true);
+            if (Creature* admirer = FindOwnSummon(player, info.Entry, 40.0f))
+            {
+                Track(admirer);
+                _admirerGUIDs.push_back(admirer->GetGUID());
+            }
+        }
+
+        _events.ScheduleEvent(EVENT_TDDC3_LINE_BLOOD, 1s);
+        _events.ScheduleEvent(EVENT_TDDC3_GROUND_CAMERA, 6s);
+        _events.ScheduleEvent(EVENT_TDDC3_LINE_ROOM_FOR_ONE, 10s);
+        _events.ScheduleEvent(EVENT_TDDC3_CONTROL, 14s);
+    }
+
+    void OnCheck(Player* player) override
+    {
+        if (!IsControlling(player))
+            return;
+
+        // The choice comes first (the wiki and the comments: "Choose to either save...", then "We rode off down the canyon"): a
+        // player who rides off without picking hears Martek's "...I only had room to rescue one of them." again once he is away
+        // from the camp and once more at the end of the canyon, which gives nothing until an admirer rides along (or was picked
+        // in an earlier telling). The admirers wait at the camp. Ours: no source says what Martek did then
+        bool const admirerDone = _picked || CreditCount(player, NPC_TDDC3_ADMIRER_CREDIT);
+        if (!admirerDone && !_remindedAway && me->GetExactDist2d(&_story->ReturnPos) > MartekReminderDistance)
+        {
+            _remindedAway = true;
+            Narrate(TALK_TDDC3_ROOM_FOR_ONE, player);
+        }
+
+        if (!_canyon && me->GetExactDist2d(&MartekCanyonEnd) <= MartekCanyonRadius
+            && std::fabs(me->GetPositionZ() - MartekCanyonEnd.GetPositionZ()) <= 15.0f)
+        {
+            if (!admirerDone)
+            {
+                if (!_remindedCanyon)
+                    Narrate(TALK_TDDC3_ROOM_FOR_ONE, player);
+                _remindedCanyon = true;
+                return;
+            }
+
+            _canyon = true;
+            Narrate(TALK_TDDC3_CANYON_END, player);
+            Credit(player, NPC_TDDC3_CANYON_CREDIT);
+            _events.ScheduleEvent(EVENT_TDDC3_FLY, 4s);
+            return;
+        }
+
+        if (_flying && !_pillar && me->GetExactDist2d(&MartekPillarTop) <= MartekPillarRadius && me->GetPositionZ() >= MartekPillarMinZ)
+        {
+            _pillar = true;
+            Narrate(TALK_TDDC3_ATOP_THE_PILLAR, player);
+            Credit(player, NPC_TDDC3_MOUNTAIN_CREDIT);
+            _events.ScheduleEvent(EVENT_TDDC3_THELDURIN_COMES, 3s);
+            _events.ScheduleEvent(EVENT_TDDC3_LINE_STOP_IT, 9s);
+            _events.ScheduleEvent(EVENT_TDDC3_LUCIEN_COMES, 12s);
+            _events.ScheduleEvent(EVENT_TDDC3_LINE_INTERRUPTING, 17s);
+            _events.ScheduleEvent(EVENT_TDDC3_LINE_KNIFE_FIGHT, 22s);
+        }
+    }
+
+    void SceneEvent(uint32 eventId, Player* player) override
+    {
+        switch (eventId)
+        {
+            case EVENT_TDDC3_LINE_BLOOD:
+                Narrate(TALK_TDDC3_BLOOD_RAINED, player);
+                break;
+            case EVENT_TDDC3_GROUND_CAMERA:
+                ChangeRiderSeat(player, SEAT_CAMERA_GROUND);
+                Narrate(TALK_TDDC3_HOT_BABES, player);
+                break;
+            case EVENT_TDDC3_LINE_ROOM_FOR_ONE:
+                Narrate(TALK_TDDC3_ROOM_FOR_ONE, player);
+                break;
+            case EVENT_TDDC3_CONTROL:
+                ChangeRiderSeat(player, SEAT_CONTROL);
+                break;
+            case EVENT_TDDC3_GOODBYES:
+                // The ones left behind say goodbye and go (comments: three of the lines; who says which is ours)
+                for (ObjectGuid const& guid : _admirerGUIDs)
+                    if (guid != _pickedGUID)
+                        if (Creature* admirer = GetActor(guid))
+                        {
+                            sCreatureTextMgr->SendChat(admirer, TALK_ADMIRER_GOODBYE, player);
+                            admirer->DespawnOrUnsummon(4 * IN_MILLISECONDS);
+                        }
+                break;
+            case EVENT_TDDC3_LINE_RODE_OFF:
+                Narrate(TALK_TDDC3_RODE_OFF, player);
+                break;
+            case EVENT_TDDC3_FLY:
+                Narrate(TALK_TDDC3_HELPFUL_EARLIER, player);
+                me->CastSpell(me, SPELL_TDDC3_FLY, true);
+                _flying = true;
+                _events.ScheduleEvent(EVENT_TDDC3_LINE_FLEW, 4s);
+                break;
+            case EVENT_TDDC3_LINE_FLEW:
+                Narrate(TALK_TDDC3_FLEW_TO_PILLAR, player);
+                if (_picked)
+                    _events.ScheduleEvent(EVENT_TDDC3_LINE_MOMENT, 5s);
+                break;
+            case EVENT_TDDC3_LINE_MOMENT:
+                if (_picked && !_pillar)
+                    Narrate(_picked->MomentLine, player);
+                break;
+            case EVENT_TDDC3_THELDURIN_COMES:
+                player->CastSpell(player, SPELL_TDDC3_SUMMON_THELDURIN, true);
+                if (Creature* theldurin = FindOwnSummon(player, NPC_TDDC3_THELDURIN, 120.0f))
+                {
+                    _theldurinGUID = theldurin->GetGUID();
+                    Track(theldurin);
+                    sCreatureTextMgr->SendChat(theldurin, TALK_TDDC3_THELDURIN_PUNCH, player);
+                    theldurin->SetWalk(false);
+                    theldurin->GetMotionMaster()->MovePoint(1, MartekTheldurinPunchSpot);
+                }
+                _events.ScheduleEvent(EVENT_TDDC3_THELDURIN_PUNCHES, 3s);
+                break;
+            case EVENT_TDDC3_THELDURIN_PUNCHES:
+                if (Creature* theldurin = GetActor(_theldurinGUID))
+                {
+                    if (Creature* deathwing = theldurin->FindNearestCreature(NPC_TDDC_DEATHWING, 20.0f))
+                    {
+                        theldurin->SetFacingToObject(deathwing);
+                        theldurin->CastSpell(deathwing, SPELL_TDDC3_PUNCH_DEATHWING, true);
+                    }
+                    theldurin->HandleEmoteCommand(EMOTE_ONESHOT_ATTACK_UNARMED);
+                }
+                break;
+            case EVENT_TDDC3_LINE_STOP_IT:
+                Narrate(TALK_TDDC3_STOP_IT_THELDURIN, player);
+                break;
+            case EVENT_TDDC3_LUCIEN_COMES:
+                player->CastSpell(player, SPELL_TDDC3_SUMMON_LUCIEN, true);
+                if (Creature* lucien = FindOwnSummon(player, NPC_TDDC3_GIANT_LUCIEN, 150.0f))
+                {
+                    Track(lucien);
+                    std::vector<Position> path;
+                    path.push_back(lucien->GetPosition());
+                    for (Position const& point : MartekLucienWalk)
+                        path.push_back(point);
+                    lucien->SetWalk(false);
+                    lucien->GetMotionMaster()->MoveSmoothPath(1, path.data(), path.size(), false, false);
+                }
+                break;
+            case EVENT_TDDC3_LINE_INTERRUPTING:
+                Narrate(TALK_TDDC3_QUIT_INTERRUPTING, player);
+                break;
+            case EVENT_TDDC3_LINE_KNIFE_FIGHT:
+                Narrate(TALK_TDDC3_KNIFE_FIGHT, player);
+                Credit(player, NPC_TDDC_DEATHWING);
+                EndIn(4s);
+                break;
+            default:
+                break;
+        }
+    }
+
+private:
+    static AdmirerInfo const* GetAdmirerInfo(uint32 entry)
+    {
+        for (AdmirerInfo const& info : Admirers)
+            if (info.Entry == entry)
+                return &info;
+        return nullptr;
+    }
+
+    std::vector<ObjectGuid> _admirerGUIDs;
+    ObjectGuid _pickedGUID;
+    ObjectGuid _theldurinGUID;
+    AdmirerInfo const* _picked = nullptr;
+    bool _canyon = false;
+    bool _remindedAway = false;
+    bool _remindedCanyon = false;
+    bool _flying = false;
+    bool _pillar = false;
+};
+
+// 47123-47126 - the admirers (summoned private to the player beside the hog)
+// "You pick one by talking to them" (gossip 12204 "Hop in, baby.", both TDBs): the player talks to one from the hog's seat (it
+// allows interaction); the first one picked rides along, a later pick does nothing
+struct npc_badlands_tddc_admirer : public ScriptedAI
+{
+    npc_badlands_tddc_admirer(Creature* creature) : ScriptedAI(creature) { }
+
+    void IsSummonedBy(Unit* /*summoner*/) override
+    {
+        me->SetReactState(REACT_PASSIVE);
+        me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_PC | UNIT_FLAG_IMMUNE_TO_NPC);
+    }
+
+    bool OnGossipSelect(Player* player, uint32 menuId, uint32 /*gossipListId*/) override
+    {
+        if (menuId != MENU_TDDC3_ADMIRER)
+            return false;
+
+        CloseGossipMenuFor(player);
+        if (Unit* hog = player->GetVehicleBase())
+            if (hog->GetEntry() == NPC_MARTEKS_HOG && hog->IsAIEnabled && !me->GetVehicle())
+                hog->ToCreature()->AI()->SetGUID(me->GetGUID(), DATA_TDDC_ADMIRER);
+        return true;
+    }
+
+    void AttackStart(Unit* /*who*/) override { }
+    void MoveInLineOfSight(Unit* /*who*/) override { }
+    void EnterEvadeMode(EvadeReason /*why*/) override { }
+    void UpdateAI(uint32 /*diff*/) override { }
+};
+
+// 47128 - Cave In Trigger (23 along the trench, phase 310): rocks fall where Martek's hog passes ("careful to avoid falling rocks",
+// the wiki; "falling rocks hit you", comments). Each trigger casts Cave In (87831) at a hog it sees within 40 yd, then waits 10 s
+// (range and pace ours)
+struct npc_badlands_tddc_cave_in_trigger : public ScriptedAI
+{
+    npc_badlands_tddc_cave_in_trigger(Creature* creature) : ScriptedAI(creature) { }
+
+    void Reset() override
+    {
+        me->SetReactState(REACT_PASSIVE);
+        _timer = 1 * IN_MILLISECONDS;
+    }
+
+    void AttackStart(Unit* /*who*/) override { }
+    void MoveInLineOfSight(Unit* /*who*/) override { }
+    void EnterEvadeMode(EvadeReason /*why*/) override { }
+
+    void UpdateAI(uint32 diff) override
+    {
+        if (_timer > diff)
+        {
+            _timer -= diff;
+            return;
+        }
+        _timer = 1 * IN_MILLISECONDS;
+
+        std::list<Creature*> hogs;
+        me->GetCreatureListWithEntryInGrid(hogs, NPC_MARTEKS_HOG, 40.0f);
+        for (Creature* hog : hogs)
+        {
+            if (!hog->IsAlive() || !me->InSamePhase(hog) || !me->IsWithinLOSInMap(hog) || !me->IsValidAttackTarget(hog))
+                continue;
+
+            me->CastSpell(hog, SPELL_CAVE_IN, true);
+            _timer = 10 * IN_MILLISECONDS;
+            break;
+        }
+    }
+
+private:
+    uint32 _timer = 1 * IN_MILLISECONDS;
+};
+
+// 47129 - Cave In Stalker (summoned by Cave In for 15 s): the falling rocks (87842 -> 87843 -> 87841, 127 physical in 6 yd). It
+// takes its trigger's faction, so that the rocks hit the hog (its own faction 35 is friendly to everyone)
+struct npc_badlands_tddc_cave_in_stalker : public ScriptedAI
+{
+    npc_badlands_tddc_cave_in_stalker(Creature* creature) : ScriptedAI(creature) { }
+
+    void IsSummonedBy(Unit* summoner) override
+    {
+        me->SetFaction(summoner->GetFaction());
+        me->SetReactState(REACT_PASSIVE);
+        me->CastSpell(me, SPELL_CAVE_IN_PERIODIC, true);
+    }
+
+    void AttackStart(Unit* /*who*/) override { }
+    void MoveInLineOfSight(Unit* /*who*/) override { }
+    void EnterEvadeMode(EvadeReason /*why*/) override { }
+    void UpdateAI(uint32 /*diff*/) override { }
+};
+
+/*######
 ## A player who logged out inside a story was saved where the vehicle stood (the auras are DONT_SAVE). At login whatever a story
 ## put on him is taken off, and one saved in the air (Martek's hog flies) is set down at the camp rather than dropped: ours.
 ######*/
@@ -1524,8 +1984,11 @@ private:
             dest.GetAngle(story->TellerPos.GetPositionX(), story->TellerPos.GetPositionY()));
     }
 
-    // Saved on the ground of the pillar top during Martek's last scene (his hog hovers there): set down too (added with his story)
-    static bool OnPillarTop(Player* /*player*/) { return false; }
+    // Saved on the pillar top during Martek's last scene (his hog hovers there, 115 yd above the canyon, on "ground"): set down too
+    static bool OnPillarTop(Player* player)
+    {
+        return player->GetExactDist2d(&MartekPillarTop) <= 40.0f && player->GetPositionZ() > 300.0f;
+    }
 };
 
 void AddSC_badlands_stories()
@@ -1540,5 +2003,9 @@ void AddSC_badlands_stories()
     new spell_script<spell_badlands_search_cloud>("spell_badlands_search_cloud");
     new spell_script<spell_badlands_summon_the_sun>("spell_badlands_summon_the_sun");
     new go_badlands_tddc_sun();
+    new creature_script<npc_badlands_martek_story>("npc_badlands_martek_story");
+    new creature_script<npc_badlands_tddc_admirer>("npc_badlands_tddc_admirer");
+    new creature_script<npc_badlands_tddc_cave_in_trigger>("npc_badlands_tddc_cave_in_trigger");
+    new creature_script<npc_badlands_tddc_cave_in_stalker>("npc_badlands_tddc_cave_in_stalker");
     new player_badlands_stories();
 }
