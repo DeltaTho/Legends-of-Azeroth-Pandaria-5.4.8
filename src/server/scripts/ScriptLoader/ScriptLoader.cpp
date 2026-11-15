@@ -333,6 +333,7 @@ void AddSC_boss_beauty();
 void AddSC_boss_ascendant_lord_obsidius();
 
 void AddSC_arathi_highlands();
+void AddSC_badlands_titans();
 void AddSC_blasted_lands();
 void AddSC_burning_steppes();
 void AddSC_duskwood();
@@ -1386,6 +1387,7 @@ void AddEasternKingdomsScripts()
     AddSC_boss_ascendant_lord_obsidius();
 
     AddSC_arathi_highlands();
+    AddSC_badlands_titans();
     AddSC_blasted_lands();
     AddSC_burning_steppes();
     AddSC_duskwood();
