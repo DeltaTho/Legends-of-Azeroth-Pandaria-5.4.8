@@ -30,6 +30,7 @@
 //   or speeds the three's attacks; Olaf / Gargal raises his shield or taunts the player's target onto himself.
 // - All three follow, fight what the player fights and whatever hostile comes within 40 yd of them, and obey Passive / Defensive
 //   (/petpassive, /petdefensive) and Follow / Attack given to the leader.
+// - A viking helmet on the player while the dwarves are out (Viking Helmet 87391; the Horde twin Ex-KEF: Active Aura 87592).
 // - They vanish in Dustbelch Grotto, the Scar of the Worldbreaker or anywhere outside the arc's areas and come back on return; a
 //   companion that dies comes back, at full health, once the fight is over; after a relog, a death and resurrection or a Dismiss
 //   they come back. A hunter cannot call his pet while Eric / Amakkar holds the pet slot (Spell::CheckCast); a pet summoned
@@ -368,6 +369,7 @@ class spell_badlands_companion_aura : public AuraScript
 // - Follow given to the leader brings all three back for a moment (3 s without picking a fight, ours).
 // - Left more than 60 yd behind (the player rode on, or a same-map teleport), brought to the player (active, so their grid keeps
 //   updating). A dead one is gone after 5 s; the aura's check brings him back after the fight.
+// - The leader keeps the helmet aura on the player (87391 / 87592: put back after an evade).
 struct npc_badlands_companion : public ScriptedAI
 {
     npc_badlands_companion(Creature* creature) : ScriptedAI(creature) { }
@@ -507,7 +509,8 @@ struct npc_badlands_companion : public ScriptedAI
         }
     }
 
-    // The player is gone or no longer holds the aura: go. Left far behind: brought along. The leader keeps the bar.
+    // The player is gone or no longer holds the aura: go. Left far behind: brought along. The leader keeps the bar and the
+    // helmet; the Bad Dogs mount with the player.
     bool Check()
     {
         Player* owner = GetOwnerPlayer();
@@ -536,6 +539,10 @@ struct npc_badlands_companion : public ScriptedAI
             bool charmed = !owner->GetCharmGUID().IsEmpty();
             BuildBar(owner, _ownerCharmed && !charmed);
             _ownerCharmed = charmed;
+
+            // An owner area aura of 40 yd: cast only within its reach, or it would be cast every second while he is farther
+            if (!owner->HasAura(_trio->ActiveAura) && me->IsWithinDistInMap(owner, 35.0f))
+                me->CastSpell(me, _trio->ActiveAura, true);
         }
 
         // Keep up with a mounted player (ours: guardians get no speed from their owner here, and were teleported up every second)
@@ -972,6 +979,25 @@ class spell_badlands_companion_shout : public SpellScript
     }
 };
 
+// 87391 Viking Helmet, 87592 Ex-KEF: Active Aura (cast by the leader, area aura on his owner): the helmet on the player (wiki
+// 27828 / 27834 / 27835 notes and screenshot; the Horde twin shows nothing described). The spell data also cut the player's kill
+// XP by half (effect 1, MOD_XP_PCT -50), which no source mentions: kept at 0 (questions.md 1, the default; KillRewarder reads
+// the aura's amount).
+class spell_badlands_companion_active_aura : public AuraScript
+{
+    PrepareAuraScript(spell_badlands_companion_active_aura);
+
+    void CalcXpAmount(AuraEffect const* /*aurEff*/, float& amount, bool& /*canBeRecalculated*/)
+    {
+        amount = 0;
+    }
+
+    void Register() override
+    {
+        DoEffectCalcAmount += AuraEffectCalcAmountFn(spell_badlands_companion_active_aura::CalcXpAmount, EFFECT_1, SPELL_AURA_MOD_XP_PCT);
+    }
+};
+
 void AddSC_badlands_companions()
 {
     new spell_script<spell_badlands_companion_summon>("spell_badlands_companion_summon");
@@ -982,4 +1008,5 @@ void AddSC_badlands_companions()
     new spell_script<spell_badlands_companion_order>("spell_badlands_companion_order");
     new spell_script<spell_badlands_companion_buff>("spell_badlands_companion_buff");
     new spell_script<spell_badlands_companion_shout>("spell_badlands_companion_shout");
+    new aura_script<spell_badlands_companion_active_aura>("spell_badlands_companion_active_aura");
 }
