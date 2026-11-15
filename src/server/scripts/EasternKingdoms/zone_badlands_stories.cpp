@@ -1056,6 +1056,426 @@ struct npc_badlands_tddc_deathwing : public ScriptedAI
 };
 
 /*######
+## The Day that Deathwing Came: The Real Story (27714), Lucien's story (TDDC 2)
+######*/
+
+enum LucienStory
+{
+    NPC_TDDC2_FLYING_DEATHWING          = 46502,
+    NPC_TDDC2_CLOUD                     = 47097,    // nine across the zone, 18 yd above the ground (phase 295)
+    NPC_COWARDLY_DEATHWING              = 47103,
+    NPC_TDDC2_GROW_CREDIT               = 47080,    // "Grow large enough to reach the clouds" (the vehicle's own entry)
+    GO_TDDC2_THE_SUN                    = 206550,
+
+    SPELL_TDDC2_LUCIEN_TRANSFORM        = 87741,
+    SPELL_TDDC2_LUCIEN_TRANSFORM_2      = 87748,    // "Lucien Tosselwrench (5x Size)" 47084's display, once grown
+    SPELL_TDDC2_SUMMON_DEATHWING        = 86681,
+    SPELL_SHRINK_THE_WORLD              = 87743,    // +200% size and +80% speed a stack, 5 stacks
+    SPELL_TDDC2_WALK_ANIM               = 87745,    // "Walk (Anim Replacement)": the giant walks fast with a slow walk
+    SPELL_TDDC2_SUMMON_COWARDLY_DW      = 87802,    // Deathwing 15 yd in front, and the "Find Deathwing" credit
+
+    SEAT_TDDC2_HELD_DEATHWING           = 7,        // VehicleSeat 8905 (87783 "Ride Vehicle - Seat 8")
+    SHRINK_STACKS_TO_GROW               = 5,
+    CLOUDS_TO_SEARCH                    = 5,
+
+    // 47080 text groups (broadcast texts, order from the wiki's transcript)
+    TALK_TDDC2_IT_WAS_CLOUDY            = 0,        // 47121
+    TALK_TDDC2_FLEW_INTO_CLOUDS         = 1,        // 47122
+    TALK_TDDC2_I_YELLED                 = 2,        // 47124
+    TALK_TDDC2_YELL_FIND_YOU            = 3,        // 47125 (yell)
+    TALK_TDDC2_YELL_KALIMDOR            = 4,        // 47126 (yell)
+    TALK_TDDC2_TINKERING                = 5,        // 47123
+    TALK_TDDC2_KEEP_SHRINKING           = 6,        // 47127 (with the Shrink the World icon)
+    TALK_TDDC2_SMALL_ENOUGH             = 7,        // 47154 (with the Search Cloud icon)
+    TALK_TDDC2_SEARCH                   = 8,        // 47170-47177, random, about one search in two
+    TALK_TDDC2_SEARCHED_EVERY_CLOUD     = 9,        // 47163
+    TALK_TDDC2_HIDING_IN_THE_SUN        = 10,       // 47164
+    TALK_TDDC2_SLIMY_NECK               = 11,       // 47166
+    TALK_TDDC2_THREW_HIM                = 12,       // 47167
+    TALK_TDDC2_WRONG_WAY                = 13,       // 46595
+
+    EVENT_TDDC2_LINE_CLOUDY             = EVENT_STORY_FIRST_SCENE_EVENT,
+    EVENT_TDDC2_DEATHWING_FLIES,
+    EVENT_TDDC2_LINE_INTO_CLOUDS,
+    EVENT_TDDC2_GROUND_CAMERA,
+    EVENT_TDDC2_YELL_FIND_YOU,
+    EVENT_TDDC2_YELL_KALIMDOR,
+    EVENT_TDDC2_LINE_TINKERING,
+    EVENT_TDDC2_CONTROL,
+    EVENT_TDDC2_SUMMON_SUN,
+    EVENT_TDDC2_THROW
+};
+
+// Search Cloud's reach (SpellRange 15 yd). The nine clouds float 43-72 yd above the ground under them (ground.py), "at the giant's
+// eye height", "walk into them, it gets foggy around your head, press 2" (comments): the reach is measured from the giant's body,
+// not his feet. Across: 15 yd plus both bodies (the core's body-to-body rule, flattened; 41.5 yd for the grown giant, combat reach
+// 1.5 x 11, and a cloud, 10). Up: 15 yd plus the cloud's body plus the giant's height (his scale, and five times that once he has
+// the 5x display: 80 yd grown, 26 yd for a small Lucien, who reaches only a cloud over a hilltop, as a 2025 comment found)
+float const SearchCloudRange = 15.0f;
+float const LucienModelHeight = 1.0f;
+float const LucienGrownModelFactor = 5.0f;
+// The sun comes 10 yd ahead of the giant and 70 yd above his feet: over his head, as "I looked up" and the comments ("a big ball over
+// your head") have it, and inside the client's reach for The Sun (CheckRange: the player's position in the object's own frame within
+// the display's box scaled by its size, 7967 x 3 = +-44 x, +-103 y, +-101 z, plus the interact distance; 87790's 45 yd ahead sat on
+// the box's edge, the retail "too far away")
+float const SunAhead = 10.0f;
+float const SunAbove = 70.0f;
+
+// The flying Deathwing turns away and flies up into the clouds (ours: the wiki's "flew into the clouds"), through the Sky camera
+Position const LucienDeathwingFlight[] =
+{
+    { -7090.0f, -2750.0f, 345.0f },
+    { -7030.0f, -2820.0f, 380.0f },
+    { -6960.0f, -2900.0f, 420.0f }
+};
+
+// Thrown to Kalimdor: from the giant's hands far to the west (+y) and up (ours)
+float const ThrowDistance = 250.0f;
+
+// 47080 - Lucien Tosselwrench (the player's Lucien)
+// What the player sees (wiki transcript, broadcast texts 47121-47177, comments, DBC; timings ours): a cloudy sky (87737, 86723);
+// the Sky camera: "First of all, it wasn't sunny out...", Deathwing flies off into the clouds; the Ground camera on Lucien with the
+// narration and his two yells; then the player is Lucien with two buttons. Shrink the World (87743) five times makes him a giant
+// ("Grow large enough", 47154); Search Cloud (87777) near the grey clouds all over the zone (five searched; a random line about
+// one search in two). After the fifth cloud: "I had searched every cloud...", "...he was hiding in the sun.  I looked up.", a sunny
+// sky and The Sun in front of him (87790, two minutes; growing or searching again once it is gone brings it back: four comments).
+// Clicking it: Deathwing is in his hand ("Find Deathwing"), Lucien is burnt to a tenth of his health, "I summoned all my strength,
+// faced west, and threw him to Kalimdor.", Deathwing flies off west and the story ends at the camp. No mob fights the giant.
+struct npc_badlands_lucien_story : public npc_badlands_story_vehicle
+{
+    npc_badlands_lucien_story(Creature* creature) : npc_badlands_story_vehicle(creature, QUEST_TDDC_LUCIEN) { }
+
+    void DoAction(int32 action) override
+    {
+        Player* player = GetPlayer();
+        if (!player || !IsControlling(player))
+            return;
+
+        switch (action)
+        {
+            case ACTION_TDDC_GROW:
+            {
+                Aura const* shrink = me->GetAura(SPELL_SHRINK_THE_WORLD);
+                // Grown: the 5x Lucien's display (the clouds at his eye height, "so big I could hardly see where I was going")
+                if (shrink && shrink->GetStackAmount() >= SHRINK_STACKS_TO_GROW && !me->HasAura(SPELL_TDDC2_LUCIEN_TRANSFORM_2))
+                    me->CastSpell(me, SPELL_TDDC2_LUCIEN_TRANSFORM_2, true);
+                if (shrink && shrink->GetStackAmount() >= SHRINK_STACKS_TO_GROW && !CreditCount(player, NPC_TDDC2_GROW_CREDIT))
+                {
+                    Credit(player, NPC_TDDC2_GROW_CREDIT);
+                    Narrate(TALK_TDDC2_SMALL_ENOUGH, player);
+                }
+                if (!EndIfComplete(player))
+                    TrySun(player);
+                break;
+            }
+            case ACTION_TDDC_CLOUD_SEARCHED:
+                // One credit a search, as 87777's KILL_CREDIT gives (the same cloud may be searched again)
+                Credit(player, NPC_TDDC2_CLOUD);
+                if (urand(0, 1))
+                    Say(TALK_TDDC2_SEARCH, player);
+                if (!EndIfComplete(player))
+                    TrySun(player);
+                break;
+            case ACTION_TDDC_SUN_CLICKED:
+                CatchDeathwing(player);
+                break;
+            default:
+                break;
+        }
+    }
+
+protected:
+    uint8 WrongWayGroup() const override { return TALK_TDDC2_WRONG_WAY; }
+
+    // An unclicked sun (personal, 120 s, with the player's phases: also seen outside the story) goes with the story
+    void OnEnd(Player* player) override
+    {
+        std::list<GameObject*> suns;
+        player->GetGameObjectListWithEntryInGrid(suns, GO_TDDC2_THE_SUN, 100.0f);
+        for (GameObject* sun : suns)
+            if (sun->GetPrivateObjectOwner() == player->GetGUID())
+            {
+                sun->SetRespawnTime(0);
+                sun->Delete();
+            }
+    }
+
+    void OnSummoned(Player* /*player*/) override
+    {
+        // "I never saw any [mobs]" (comment 2011-08-21), "never attacked" (2010-12-05 [+66]): the giant walks the normal Badlands,
+        // whose mobs cannot fight a unit immune to NPCs (ours)
+        me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_NPC);
+    }
+
+    void StartScene(Player* player) override
+    {
+        me->CastSpell(me, SPELL_TDDC2_LUCIEN_TRANSFORM, true);
+        player->CastSpell(player, SPELL_TDDC2_WEATHER, true);
+
+        _events.ScheduleEvent(EVENT_TDDC2_LINE_CLOUDY, 1s);
+        _events.ScheduleEvent(EVENT_TDDC2_DEATHWING_FLIES, 2s);
+        _events.ScheduleEvent(EVENT_TDDC2_LINE_INTO_CLOUDS, 6s);
+        _events.ScheduleEvent(EVENT_TDDC2_GROUND_CAMERA, 10s);
+        _events.ScheduleEvent(EVENT_TDDC2_YELL_FIND_YOU, 14s);
+        _events.ScheduleEvent(EVENT_TDDC2_YELL_KALIMDOR, 16s);
+        _events.ScheduleEvent(EVENT_TDDC2_LINE_TINKERING, 19s);
+        _events.ScheduleEvent(EVENT_TDDC2_CONTROL, 23s);
+    }
+
+    void SceneEvent(uint32 eventId, Player* player) override
+    {
+        switch (eventId)
+        {
+            case EVENT_TDDC2_LINE_CLOUDY:
+                Narrate(TALK_TDDC2_IT_WAS_CLOUDY, player);
+                break;
+            case EVENT_TDDC2_DEATHWING_FLIES:
+                player->CastSpell(player, SPELL_TDDC2_SUMMON_DEATHWING, true);
+                if (Creature* deathwing = FindOwnSummon(player, NPC_TDDC2_FLYING_DEATHWING, 120.0f))
+                {
+                    Track(deathwing);
+                    npc_badlands_theldurin_story::FlyAway(deathwing, LucienDeathwingFlight, std::size(LucienDeathwingFlight));
+                }
+                break;
+            case EVENT_TDDC2_LINE_INTO_CLOUDS:
+                Narrate(TALK_TDDC2_FLEW_INTO_CLOUDS, player);
+                break;
+            case EVENT_TDDC2_GROUND_CAMERA:
+                ChangeRiderSeat(player, SEAT_CAMERA_GROUND);
+                Narrate(TALK_TDDC2_I_YELLED, player);
+                break;
+            case EVENT_TDDC2_YELL_FIND_YOU:
+                Say(TALK_TDDC2_YELL_FIND_YOU, player);
+                break;
+            case EVENT_TDDC2_YELL_KALIMDOR:
+                Say(TALK_TDDC2_YELL_KALIMDOR, player);
+                break;
+            case EVENT_TDDC2_LINE_TINKERING:
+                Narrate(TALK_TDDC2_TINKERING, player);
+                break;
+            case EVENT_TDDC2_CONTROL:
+                Narrate(TALK_TDDC2_KEEP_SHRINKING, player);
+                ChangeRiderSeat(player, SEAT_CONTROL);
+                me->CastSpell(me, SPELL_TDDC2_WALK_ANIM, true);
+                break;
+            case EVENT_TDDC2_SUMMON_SUN:
+                _sunComing = false;
+                if (!_caught && !me->HasAura(SPELL_TDDC2_SUMMON_THE_SUN) && IsControlling(player))
+                {
+                    if (!_sunToldOnce)
+                        Narrate(TALK_TDDC2_HIDING_IN_THE_SUN, player);
+                    _sunToldOnce = true;
+                    player->CastSpell(player, SPELL_TDDC2_SUMMON_THE_SUN, true);
+                }
+                break;
+            case EVENT_TDDC2_THROW:
+                Throw(player);
+                break;
+            default:
+                break;
+        }
+    }
+
+private:
+    // A retold story whose last missing objective was the growth or a cloud (Deathwing already found in an earlier telling):
+    // that credit completes the quest and the story ends there, as it does after the throw
+    bool EndIfComplete(Player* player)
+    {
+        if (_caught || _ending || player->GetQuestStatus(QUEST_TDDC_LUCIEN) != QUEST_STATUS_COMPLETE)
+            return false;
+
+        _ending = true;
+        EndIn(3s);
+        return true;
+    }
+
+    // Grown large enough (the wiki's order: grow, then search) and five clouds searched, Deathwing not found yet, and no sun up:
+    // the sun comes (again). Without the growth a player who searched first would find Deathwing and be sent back to the camp with
+    // "Grow large enough" open
+    void TrySun(Player* player)
+    {
+        if (_caught || _sunComing || !CreditCount(player, NPC_TDDC2_GROW_CREDIT) || CreditCount(player, NPC_TDDC2_CLOUD) < CLOUDS_TO_SEARCH
+            || CreditCount(player, NPC_COWARDLY_DEATHWING)
+            || me->HasAura(SPELL_TDDC2_SUMMON_THE_SUN) || player->HasAura(SPELL_TDDC2_SUMMON_THE_SUN))
+            return;
+
+        _sunComing = true;
+        if (!_sunToldOnce)
+        {
+            Narrate(TALK_TDDC2_SEARCHED_EVERY_CLOUD, player);
+            _events.ScheduleEvent(EVENT_TDDC2_SUMMON_SUN, 4s);
+        }
+        else
+            _events.ScheduleEvent(EVENT_TDDC2_SUMMON_SUN, 500ms);
+    }
+
+    // The Sun clicked: 87802 summons the Cowardly Deathwing in front of Lucien and gives "Find Deathwing"; he is put in Lucien's
+    // hand (seat 7, the seat 87783 names), and the sun burns Lucien to a tenth of his health (wiki)
+    void CatchDeathwing(Player* player)
+    {
+        if (_caught)
+            return;
+        _caught = true;
+
+        player->CastSpell(player, SPELL_TDDC2_SUMMON_COWARDLY_DW, true);
+        if (!CreditCount(player, NPC_COWARDLY_DEATHWING))
+            Credit(player, NPC_COWARDLY_DEATHWING);
+        else
+            CheckGroupCredit(player);
+
+        if (Creature* deathwing = FindOwnSummon(player, NPC_COWARDLY_DEATHWING, 60.0f))
+        {
+            // 87802's summon is not personal (SummonProperties 64) and keeps the player's phase 169: it is made the player's own,
+            // so that passers-by in the open world do not see a dragon in an invisible hand (ours)
+            deathwing->SetPrivateObjectOwner(player->GetGUID());
+            deathwing->UpdateObjectVisibility();
+            _heldGUID = deathwing->GetGUID();
+            Track(deathwing);
+            deathwing->EnterVehicle(me, SEAT_TDDC2_HELD_DEATHWING);
+        }
+
+        me->SetHealth(std::max<uint32>(1, me->CountPctFromMaxHealth(10)));
+        Narrate(TALK_TDDC2_SLIMY_NECK, player);
+        _events.ScheduleEvent(EVENT_TDDC2_THROW, 5s);
+    }
+
+    void Throw(Player* player)
+    {
+        Narrate(TALK_TDDC2_THREW_HIM, player);
+
+        if (Creature* deathwing = GetActor(_heldGUID))
+        {
+            // 87811 "Eject Passenger 8" (a script effect) is this
+            deathwing->ExitVehicle();
+            float const facing = float(M_PI) / 2.0f;   // west
+            Position const dest = { me->GetPositionX(), me->GetPositionY() + ThrowDistance, me->GetPositionZ() + 80.0f };
+            deathwing->SetFacingTo(facing);
+            Position const path[] = { dest };
+            npc_badlands_theldurin_story::FlyAway(deathwing, path, 1);
+            deathwing->DespawnOrUnsummon(6 * IN_MILLISECONDS);
+        }
+
+        EndIn(3s);
+    }
+
+    ObjectGuid _heldGUID;
+    bool _ending = false;
+    bool _caught = false;
+    bool _sunComing = false;
+    bool _sunToldOnce = false;
+};
+
+// 87743 - Shrink the World (Lucien's first button): the size and speed are the aura's; at five stacks the vehicle credits "Grow
+// large enough" (its SCRIPT_EFFECT), and a grow after the sun has gone brings it back
+class spell_badlands_shrink_the_world : public SpellScript
+{
+    PrepareSpellScript(spell_badlands_shrink_the_world);
+
+    void HandleAfterHit()
+    {
+        if (Creature* vehicle = GetCaster()->ToCreature())
+            if (vehicle->GetEntry() == NPC_LUCIEN_VEHICLE && vehicle->IsAIEnabled)
+                vehicle->AI()->DoAction(ACTION_TDDC_GROW);
+    }
+
+    void Register() override
+    {
+        AfterHit += SpellHitFn(spell_badlands_shrink_the_world::HandleAfterHit);
+    }
+};
+
+// 87777 - Search Cloud (Lucien's second button): a cloud within 15 yd (conditions: 47097, the core's nearby-entry search). The cast
+// is refused with no cloud in reach (the core would carry on without a target). The search's credit is given by the vehicle to its
+// driver (effect 1's KILL_CREDIT names the cloud's passenger, which a cloud never has). Not while the sun is up (the DBC's
+// excludeCasterAura 87790)
+class spell_badlands_search_cloud : public SpellScript
+{
+    PrepareSpellScript(spell_badlands_search_cloud);
+
+    static bool InReach(Unit* giant, Creature* cloud)
+    {
+        float const height = giant->GetObjectScale() * LucienModelHeight
+            * (giant->HasAura(SPELL_TDDC2_LUCIEN_TRANSFORM_2) ? LucienGrownModelFactor : 1.0f);
+        return cloud->IsAlive() && giant->InSamePhase(cloud)
+            && giant->GetExactDist2d(cloud) <= SearchCloudRange + giant->GetObjectSize() + cloud->GetObjectSize()
+            && std::fabs(cloud->GetPositionZ() - giant->GetPositionZ()) <= SearchCloudRange + cloud->GetObjectSize() + height;
+    }
+
+    SpellCastResult CheckCloud()
+    {
+        Unit* caster = GetCaster();
+        std::list<Creature*> clouds;
+        caster->GetCreatureListWithEntryInGrid(clouds, NPC_TDDC2_CLOUD, 150.0f);
+        for (Creature* cloud : clouds)
+            if (InReach(caster, cloud))
+                return SPELL_CAST_OK;
+        return SPELL_FAILED_NO_VALID_TARGETS;
+    }
+
+    // The search counts here, by the reach above: the core's own nearby-entry search for effect 0 (15 yd body to body in 3D) finds
+    // none of the clouds from the ground
+    void HandleSearch()
+    {
+        if (Creature* vehicle = GetCaster()->ToCreature())
+            if (vehicle->GetEntry() == NPC_LUCIEN_VEHICLE && vehicle->IsAIEnabled)
+                vehicle->AI()->DoAction(ACTION_TDDC_CLOUD_SEARCHED);
+    }
+
+    void PreventCredit(SpellEffIndex effIndex)
+    {
+        PreventHitDefaultEffect(effIndex);
+    }
+
+    void Register() override
+    {
+        OnCheckCast += SpellCheckCastFn(spell_badlands_search_cloud::CheckCloud);
+        AfterCast += SpellCastFn(spell_badlands_search_cloud::HandleSearch);
+        OnEffectHitTarget += SpellEffectFn(spell_badlands_search_cloud::PreventCredit, EFFECT_1, SPELL_EFFECT_KILL_CREDIT);
+    }
+};
+
+// 87790 - TDDC 2: Summon the Sun: The Sun comes down 20 yd in front of the giant at his feet's height instead of 45 yd in front of
+// the player (stories S2, from the client's reach check for a spell caster object)
+class spell_badlands_summon_the_sun : public SpellScript
+{
+    PrepareSpellScript(spell_badlands_summon_the_sun);
+
+    void SetSunSpot(SpellDestination& dest)
+    {
+        Unit* caster = GetCaster();
+        Unit* giant = caster->GetVehicleBase() ? caster->GetVehicleBase() : caster;
+        Position spot = giant->GetNearPosition(SunAhead, 0.0f);
+        spot.m_positionZ = giant->GetPositionZ() + SunAbove;
+        dest.Relocate(spot);
+    }
+
+    void Register() override
+    {
+        OnDestinationTargetSelect += SpellDestinationTargetSelectFn(spell_badlands_summon_the_sun::SetSunSpot, EFFECT_0, TARGET_DEST_CASTER_FRONT);
+    }
+};
+
+// 206550 - The Sun (personal to the player, two minutes): "click on the sun" (the wiki). Its spell (87814 forcing 87802) is cast by
+// the giant's story, which also puts Deathwing in his hand; the sun goes
+class go_badlands_tddc_sun : public GameObjectScript
+{
+public:
+    go_badlands_tddc_sun() : GameObjectScript("go_badlands_tddc_sun") { }
+
+    bool OnGossipHello(Player* player, GameObject* go) override
+    {
+        if (Unit* base = player->GetVehicleBase())
+            if (base->GetEntry() == NPC_LUCIEN_VEHICLE && base->IsAIEnabled)
+            {
+                base->ToCreature()->AI()->DoAction(ACTION_TDDC_SUN_CLICKED);
+                go->SetRespawnTime(0);
+                go->Delete();
+            }
+        return true;
+    }
+};
+
+/*######
 ## A player who logged out inside a story was saved where the vehicle stood (the auras are DONT_SAVE). At login whatever a story
 ## put on him is taken off, and one saved in the air (Martek's hog flies) is set down at the camp rather than dropped: ours.
 ######*/
@@ -1115,5 +1535,10 @@ void AddSC_badlands_stories()
     new creature_script<npc_badlands_theldurin_story>("npc_badlands_theldurin_story");
     new spell_script<spell_badlands_theldurins_fist>("spell_badlands_theldurins_fist");
     new creature_script<npc_badlands_tddc_deathwing>("npc_badlands_tddc_deathwing");
+    new creature_script<npc_badlands_lucien_story>("npc_badlands_lucien_story");
+    new spell_script<spell_badlands_shrink_the_world>("spell_badlands_shrink_the_world");
+    new spell_script<spell_badlands_search_cloud>("spell_badlands_search_cloud");
+    new spell_script<spell_badlands_summon_the_sun>("spell_badlands_summon_the_sun");
+    new go_badlands_tddc_sun();
     new player_badlands_stories();
 }
