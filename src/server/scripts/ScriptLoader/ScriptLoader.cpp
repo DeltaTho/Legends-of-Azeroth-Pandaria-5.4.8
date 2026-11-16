@@ -347,6 +347,7 @@ void AddSC_eastern_plaguelands_finale();
 void AddSC_badlands_companions();
 void AddSC_badlands_rhea();
 void AddSC_searing_gorge_lunk();
+void AddSC_searing_gorge_cauldron();
 void AddSC_eversong_woods();
 void AddSC_ghostlands();
 void AddSC_gilneas();
@@ -1405,6 +1406,7 @@ void AddEasternKingdomsScripts()
     AddSC_badlands_companions();
     AddSC_badlands_rhea();
     AddSC_searing_gorge_lunk();
+    AddSC_searing_gorge_cauldron();
     AddSC_eversong_woods();
     AddSC_ghostlands();
     AddSC_gilneas();
