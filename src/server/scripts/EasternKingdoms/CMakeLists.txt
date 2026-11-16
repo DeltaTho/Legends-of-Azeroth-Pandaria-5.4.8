@@ -131,6 +131,7 @@ set(scripts_STAT_SRCS
   EasternKingdoms/zone_searing_gorge_lunk.cpp
   EasternKingdoms/zone_badlands_rhea.cpp
   EasternKingdoms/zone_searing_gorge_cauldron.cpp
+  EasternKingdoms/zone_searing_gorge_thorium.cpp
   EasternKingdoms/Stratholme/boss_baroness_anastari.cpp
   EasternKingdoms/Stratholme/boss_nerubenkan.cpp
   EasternKingdoms/Stratholme/instance_stratholme.cpp
