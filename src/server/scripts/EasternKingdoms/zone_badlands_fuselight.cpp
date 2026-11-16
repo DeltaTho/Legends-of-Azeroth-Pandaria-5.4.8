@@ -273,6 +273,7 @@ enum Uncrashable
     SPELL_RIDE_VEHICLE_HARDCODED    = 46598,
     SPELL_ROCKET_TRAIL              = 96840,   // cosmetic, as the Silver Bullet X-831 (ours here)
 
+    ROCKET_PILOT_SEAT               = 0,       // seat 9198: Gobby
     ROCKET_PASSENGER_SEAT           = 1,       // seat 9199: no exit, not selectable (sourced: "you cannot exit")
 
     ZONE_BADLANDS                   = 3,
@@ -349,6 +350,12 @@ static void SetDownAtLanding(Player* player)
 // pilot's: with Gobby installed the board fails and leaves a stray ride aura; without him the player would take the controls.
 // So the rocket is summoned here and the player put in the passenger seat by name (seat 1, which cannot be left). R4: no rocket
 // for a bot (bots reach Eddie by following their master; the quest is complete on accept).
+// Gobby is seated after the player, from here, not by vehicle_template_accessory (removed in 2026_11_20_91). Seated first, he
+// lost his seat the moment the player boarded: two ride auras on one vehicle stack only while an enterable seat is still free
+// (Aura::CanStackWith, SpellAuras.cpp, the SPELL_AURA_CONTROL_VEHICLE case: GetAvailableSeatCount counts seats with
+// CAN_ENTER_OR_EXIT). With Gobby in seat 0 none was left (seat 1 cannot be entered), so the player's aura removed Gobby's
+// (Unit::_RemoveNoStackAurasDueToAura), Gobby left the vehicle and, as an accessory, was unsummoned 2 s later
+// (Unit::_ExitVehicle). The other way round, seat 0 is still free when Gobby's aura arrives, so both stay.
 class spell_badlands_rocket_ride_to_badlands : public SpellScript
 {
     PrepareSpellScript(spell_badlands_rocket_ride_to_badlands);
@@ -379,6 +386,27 @@ class spell_badlands_rocket_ride_to_badlands : public SpellScript
 
         // The aura's amount is the seat + 1 (AuraEffect::HandleAuraControlVehicle)
         player->CastCustomSpell(SPELL_RIDE_VEHICLE_HARDCODED, SPELLVALUE_BASE_POINT0, ROCKET_PASSENGER_SEAT + 1, rocket, true);
+
+        // Then the pilot (a minion accessory: he goes with the rocket; Vehicle::InstallAccessory boards him through the rocket's
+        // spellclick row 48766 / 46598)
+        if (player->GetVehicleBase() == rocket)
+            if (Vehicle* kit = rocket->GetVehicleKit())
+            {
+                if (!kit->GetPassenger(ROCKET_PILOT_SEAT))
+                    kit->InstallAccessory(NPC_GOBBY_NOZZLEROCKET, ROCKET_PILOT_SEAT, true, TEMPSUMMON_MANUAL_DESPAWN, 0);
+                if (!kit->GetPassenger(ROCKET_PILOT_SEAT))
+                    TC_LOG_ERROR("scripts", "spell_badlands_rocket_ride_to_badlands: Gobby Nozzlerocket could not be seated on the rocket of %s", player->GetName().c_str());
+
+                // As Vehicle::InstallAllAccessories does: a client that learns of the rocket only now dropped Gobby's boarding move,
+                // so his seat is announced again once the rocket has been sent, and once more for a late client
+                Unit* base = rocket;
+                for (uint32 delay : { 250u, 1500u })
+                    base->m_Events.AddLambdaEventAtOffset([base]()
+                    {
+                        if (Vehicle* vehicle = base->GetVehicleKit())
+                            vehicle->AnnouncePassengers();
+                    }, delay);
+            }
     }
 
     void Register() override
