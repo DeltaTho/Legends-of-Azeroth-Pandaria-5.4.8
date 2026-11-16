@@ -1413,9 +1413,10 @@ class spell_badlands_shrink_the_world : public SpellScript
 };
 
 // 87777 - Search Cloud (Lucien's second button): a cloud within 15 yd (conditions: 47097, the core's nearby-entry search). The cast
-// is refused with no cloud in reach (the core would carry on without a target). The search's credit is given by the vehicle to its
-// driver (effect 1's KILL_CREDIT names the cloud's passenger, which a cloud never has). Not while the sun is up (the DBC's
-// excludeCasterAura 87790)
+// is refused with no cloud in reach (the core would carry on without a target). Effect 1 (KILL_CREDIT, the target's passenger) makes
+// the driver the spell's explicit target: the client sends none or the selection, and the pet cast handler takes the driver in seat 2
+// in place of anything not aboard (a clicked cloud). Its credit is prevented: the vehicle gives the search's credit to its driver.
+// Not while the sun is up (the DBC's excludeCasterAura 87790)
 class spell_badlands_search_cloud : public SpellScript
 {
     PrepareSpellScript(spell_badlands_search_cloud);

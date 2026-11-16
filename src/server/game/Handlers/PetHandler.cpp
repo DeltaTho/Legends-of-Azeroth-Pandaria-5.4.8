@@ -1374,6 +1374,13 @@ void WorldSession::HandlePetCastSpellOpcode(WorldPacket& recvPacket)
     Unit* unit_target = targetGUID ? ObjectAccessor::GetUnit(*_player, targetGUID) : nullptr;
     if (!unit_target && caster->GetVehicleKit() && caster->GetVehicleKit()->GetPassenger(0))
         unit_target = caster->GetVehicleKit()->GetPassenger(0);
+    // A spell whose only explicit unit target is the vehicle's own passenger (TARGET_UNIT_TARGET_PASSENGER), cast by a player who
+    // rides the vehicle, takes him when no passenger of the vehicle was given: nothing selected with seat 0 empty (Lucien's Search
+    // Cloud, driven from seat 2: "No target"), or a selected unit that is not aboard (a clicked cloud: "Invalid target").
+    // CheckPetCast makes it the spell's unit target in place of the selection
+    if (caster->GetVehicleKit() && (spellInfo->GetExplicitTargetMask() & TARGET_FLAG_UNIT_MASK) == TARGET_FLAG_UNIT_PASSENGER
+        && (!unit_target || !unit_target->IsOnVehicle(caster)) && _player->IsOnVehicle(caster))
+        unit_target = _player;
     SpellCastResult result = spell->CheckPetCast(unit_target ? unit_target : nullptr);
 
     if (result == SPELL_CAST_OK)
