@@ -28,6 +28,8 @@
 #include "Map.h"
 #include "MotionMaster.h"
 #include "TemporarySummon.h"
+#include "SpellScript.h"
+#include "SpellAuraEffects.h"
 
 enum SearingGorgeDinwhisker
 {
@@ -241,8 +243,416 @@ private:
     GuidSet _emberGiven;
 };
 
+enum SearingGorgeLunk
+{
+    NPC_LUNK_SPIDER_RIDER           = 47281,
+    NPC_LUNK_CRANKY_DWARFS          = 47333,
+    NPC_LUNK_RENDANS_WEAKNESS       = 47430,
+
+    SPELL_SUMMON_LUNK_SPIDER_RIDER  = 88166,
+    SPELL_SUMMON_LUNK_CRANKY_DWARFS = 88292,
+    SPELL_SUMMON_LUNK_RENDAN        = 88450,
+    SPELL_LUNKS_INFECTIOUS_DANCE    = 88451,
+    SPELL_SUMMON_DANCER_1           = 88457,
+    SPELL_SUMMON_DANCER_2           = 88459,
+    SPELL_SUMMON_DANCER_3           = 88460,
+
+    QUEST_LUNK_SPIDER_RIDER         = 27959,
+    QUEST_LUNK_CRANKY_DWARFS        = 27983,
+    QUEST_LUNK_RENDANS_WEAKNESS     = 28034,
+
+    SAY_LUNK_NO_KILL                = 2,    // BT 47698-47703, TextRange 5 (owner only)
+
+    ACTION_LUNK_SCOLD               = 1,
+    ACTION_LUNK_DISMISS             = 2,
+
+    EVENT_LUNK_CHECK                = 1,
+
+    LUNK_SCOLD_COOLDOWN             = 20 * IN_MILLISECONDS,  // the summon auras' proc cooldown (SpellAuraOptions 20000)
+};
+
+struct LunkFollowerInfo
+{
+    uint32 Entry;
+    uint32 Spell;
+    uint32 Quest;
+};
+
+LunkFollowerInfo const LunkFollowers[] =
+{
+    { NPC_LUNK_SPIDER_RIDER,     SPELL_SUMMON_LUNK_SPIDER_RIDER,  QUEST_LUNK_SPIDER_RIDER     },
+    { NPC_LUNK_CRANKY_DWARFS,    SPELL_SUMMON_LUNK_CRANKY_DWARFS, QUEST_LUNK_CRANKY_DWARFS    },
+    { NPC_LUNK_RENDANS_WEAKNESS, SPELL_SUMMON_LUNK_RENDAN,        QUEST_LUNK_RENDANS_WEAKNESS },
+};
+
+static LunkFollowerInfo const* GetLunkInfoByEntry(uint32 entry)
+{
+    for (LunkFollowerInfo const& info : LunkFollowers)
+        if (info.Entry == entry)
+            return &info;
+    return nullptr;
+}
+
+static LunkFollowerInfo const* GetLunkInfoBySpell(uint32 spellId)
+{
+    for (LunkFollowerInfo const& info : LunkFollowers)
+        if (info.Spell == spellId)
+            return &info;
+    return nullptr;
+}
+
+// The player's own living Lunk of this entry. The followers are private, but a search from their owner finds them.
+static Creature* FindLunkFollower(Player* player, uint32 entry, float range = 150.0f)
+{
+    std::list<Creature*> lunks;
+    player->GetCreatureListWithEntryInGrid(lunks, entry, range);
+    for (Creature* lunk : lunks)
+        if (lunk->IsAlive() && !lunk->IsDestroyedObject() && lunk->GetOwnerGUID() == player->GetGUID())
+            return lunk;
+    return nullptr;
+}
+
+static void DismissLunkFollowers(Player* player, uint32 entry)
+{
+    std::list<Creature*> lunks;
+    player->GetCreatureListWithEntryInGrid(lunks, entry, 250.0f);
+    for (Creature* lunk : lunks)
+        if (lunk->GetOwnerGUID() == player->GetGUID() && lunk->IsAIEnabled)
+            lunk->AI()->DoAction(ACTION_LUNK_DISMISS);
+}
+
+// A kill while Lunk is out: one scold per kill however many Lunks follow (the first of the player's Lunks in table order speaks,
+// his 20 s cooldown applying; the kill proc of each summon aura and the player's own kill hook all come here)
+static void ScoldForKill(Player* player)
+{
+    for (LunkFollowerInfo const& info : LunkFollowers)
+        if (player->HasAura(info.Spell))
+            if (Creature* lunk = FindLunkFollower(player, info.Entry))
+            {
+                if (lunk->IsAIEnabled)
+                    lunk->AI()->DoAction(ACTION_LUNK_SCOLD);
+                return;
+            }
+}
+
+// As the spells' own summon effect does it (Spell::EffectSummonType, ALLY category, no SummonProperties): private to the player,
+// his faction, owned by him. Manual despawn instead of the ~49 days a -1 duration becomes: the follower goes with the aura.
+static ObjectGuid SummonLunkFollower(Player* player, LunkFollowerInfo const& info)
+{
+    if (Creature* lunk = FindLunkFollower(player, info.Entry))
+        return lunk->GetGUID();
+    if (!player->IsAlive())
+        return ObjectGuid::Empty;
+
+    Position pos = player->GetNearPosition(3.0f, float(M_PI) * 0.75f);
+    TempSummon* lunk = player->SummonCreature(info.Entry, pos, TEMPSUMMON_MANUAL_DESPAWN, 0ms, 0, player->GetGUID());
+    if (!lunk)
+        return ObjectGuid::Empty;
+
+    lunk->SetOwnerGUID(player->GetGUID());
+    lunk->SetFaction(player->GetFaction());
+    lunk->SetUInt32Value(UNIT_FIELD_CREATED_BY_SPELL, info.Spell);
+    return lunk->GetGUID();
+}
+
+// 47281, 47333, 47430 - Lunk, following the player on Spider Rider, Cranky Little Dwarfs and Rendan's Weakness
+// What the player sees (sourced: Wowhead 27959 / 27983 / 28034 / 47269 comments and the wiki): Lunk follows the player while the
+// quest is in his log; killing anything while he is out makes him scold ("You stop killing now! Lunk doesn't like!" and five more,
+// broadcast texts 47698-47703); he is gone when the quest is handed in from the log or abandoned; a relog brings him back
+// (2010-12-02 [+23]). On Rendan's Weakness he dances (screenshot 202159).
+// Ours: he keeps 4 yd behind-left (the comments complain he stood so close he hid small characters), cannot be attacked and
+// fights nothing (retail let him die, which stalled the quest), leaves when the player leaves Searing Gorge and comes back on
+// return (a 2012 comment had him follow to Ironforge), is brought along when left more than 50 yd behind, and comes back within
+// 5 s after a death, a resurrection or anything else that lost him (spell_sg_lunk_summon_aura). The kill scold is one line at
+// most every 20 s (the auras' proc cooldown), to the owner only.
+struct npc_sg_lunk_follower : public ScriptedAI
+{
+    npc_sg_lunk_follower(Creature* creature) : ScriptedAI(creature) { }
+
+    void IsSummonedBy(Unit* summoner) override
+    {
+        _info = GetLunkInfoByEntry(me->GetEntry());
+        if (!_info || !summoner->IsPlayer())
+            return;
+
+        _ownerGUID = summoner->GetGUID();
+        me->SetReactState(REACT_PASSIVE);
+        me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_PC | UNIT_FLAG_IMMUNE_TO_NPC);
+        // Left behind out of sight his grid would stop and he would stand there while the aura blocks a new summon
+        me->setActive(true, ActiveFlags::Script);
+
+        if (me->GetEntry() == NPC_LUNK_RENDANS_WEAKNESS)
+        {
+            me->SetEmoteState(EMOTE_STATE_DANCE);
+            DoCast(me, SPELL_LUNKS_INFECTIOUS_DANCE, true);
+        }
+
+        FollowOwner(summoner);
+        _events.Reset();
+        _events.ScheduleEvent(EVENT_LUNK_CHECK, 500ms);
+    }
+
+    void Reset() override { }
+    void MoveInLineOfSight(Unit* /*who*/) override { }
+    void AttackStart(Unit* /*who*/) override { }
+    void EnterEvadeMode(EvadeReason /*why*/) override { }
+
+    void JustDied(Unit* /*killer*/) override
+    {
+        _events.Reset();
+        me->DespawnOrUnsummon(2000);
+    }
+
+    void DoAction(int32 action) override
+    {
+        switch (action)
+        {
+            case ACTION_LUNK_SCOLD:
+                Scold(false);
+                break;
+            case ACTION_LUNK_DISMISS:
+                Dismiss();
+                break;
+            default:
+                break;
+        }
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        _scoldCooldown = _scoldCooldown > diff ? _scoldCooldown - diff : 0;
+        _events.Update(diff);
+
+        while (uint32 eventId = _events.ExecuteEvent())
+        {
+            if (eventId == EVENT_LUNK_CHECK)
+            {
+                _events.ScheduleEvent(EVENT_LUNK_CHECK, 500ms);
+                Check();
+            }
+        }
+    }
+
+protected:
+    Player* GetOwner() const
+    {
+        return ObjectAccessor::GetPlayer(*me, _ownerGUID);
+    }
+
+    void FollowOwner(Unit* owner)
+    {
+        me->SetWalk(false);
+        me->GetMotionMaster()->Clear();
+        me->GetMotionMaster()->MoveFollow(owner, 4.0f, 2.0f);
+    }
+
+    void Scold(bool always)
+    {
+        if (!always && _scoldCooldown)
+            return;
+        if (Player* owner = GetOwner())
+        {
+            Talk(SAY_LUNK_NO_KILL, owner);
+            _scoldCooldown = LUNK_SCOLD_COOLDOWN;
+        }
+    }
+
+    virtual void Dismiss()
+    {
+        _events.Reset();
+        me->DespawnOrUnsummon();
+    }
+
+    // The owner holds the summon aura and is on this map: true. Gone or without the aura twice in a row: dismissed.
+    virtual bool Check()
+    {
+        Player* owner = GetOwner();
+        if (!owner || !owner->IsInWorld() || !_info || !owner->HasAura(_info->Spell))
+        {
+            if (++_ownerMissing >= 2)
+                Dismiss();
+            return false;
+        }
+        _ownerMissing = 0;
+        return true;
+    }
+
+    // Left behind (the player rode on): brought along
+    void CatchUp(Player* owner)
+    {
+        if (owner->IsInFlight() || me->IsWithinDistInMap(owner, 50.0f))
+            return;
+
+        Position pos = owner->GetNearPosition(3.0f, float(M_PI) * 0.75f);
+        me->NearTeleportTo(pos.GetPositionX(), pos.GetPositionY(), pos.GetPositionZ(), owner->GetOrientation());
+        FollowOwner(owner);
+    }
+
+    LunkFollowerInfo const* _info = nullptr;
+    ObjectGuid _ownerGUID;
+    EventMap _events;
+    uint32 _scoldCooldown = 0;
+    uint8 _ownerMissing = 0;
+};
+
+// 88166, 88292, 88450 - Summon Lunk (effect 0), cast by spell_area while the quest is in the log in Searing Gorge
+// The summon effect makes a follower that nothing takes away again (a -1 duration, not in the player's controlled list). It does
+// nothing here: the aura (effect 1, spell_sg_lunk_summon_aura) summons him with a manual despawn and keeps track of him.
+class spell_sg_lunk_summon : public SpellScript
+{
+    PrepareSpellScript(spell_sg_lunk_summon);
+
+    void HandleSummon(SpellEffIndex effIndex)
+    {
+        PreventHitDefaultEffect(effIndex);
+    }
+
+    void Register() override
+    {
+        OnEffectHit += SpellEffectFn(spell_sg_lunk_summon::HandleSummon, EFFECT_0, SPELL_EFFECT_SUMMON);
+    }
+};
+
+// The same spells, effect 1 (the aura on the player; spell_custom_attribute DONT_SAVE, so a relog re-casts it and brings Lunk)
+// - Applied: Lunk is summoned (not for a ghost) and this aura remembers him, so there is never a second one: after a flight or
+//   a hearth inside the gorge the old Lunk is still this aura's, wherever he is on the map, and he catches up by himself.
+// - Every 5 s: a living player in the gorge whose Lunk is gone (never summoned because he was a ghost when the aura came, or
+//   lost in some other way) gets a new one.
+// - Removed (log hand-in, abandon, leaving the zone): Lunk goes; for Rendan's Weakness the dancers go with him.
+// - The kill proc (PROC_FLAG_KILL, 20 s cooldown) would trigger 88584, which no 5.4.8 data has: it is refused, and Lunk scolds
+//   (also covers the kills of the player's pet; the player's own kills, critters and grey mobs too, come through
+//   player_sg_lunk_kill).
+class spell_sg_lunk_summon_aura : public AuraScript
+{
+    PrepareAuraScript(spell_sg_lunk_summon_aura);
+
+    void CalcPeriodic(AuraEffect const* /*aurEff*/, bool& isPeriodic, int32& amplitude)
+    {
+        isPeriodic = true;
+        amplitude = 5 * IN_MILLISECONDS;
+    }
+
+    void EnsureLunk()
+    {
+        Player* player = GetTarget()->ToPlayer();
+        LunkFollowerInfo const* info = GetLunkInfoBySpell(GetId());
+        if (!player || !info || !player->IsInWorld() || !player->IsAlive() || player->IsInFlight())
+            return;
+
+        if (Creature* lunk = ObjectAccessor::GetCreature(*player, _lunkGUID))
+            if (lunk->IsAlive() && !lunk->IsDestroyedObject())
+                return;
+
+        _lunkGUID = SummonLunkFollower(player, *info);
+    }
+
+    void AfterApply(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
+    {
+        EnsureLunk();
+    }
+
+    void OnPeriodic(AuraEffect const* /*aurEff*/)
+    {
+        PreventDefaultAction();
+        EnsureLunk();
+    }
+
+    void AfterRemove(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
+    {
+        Player* player = GetTarget()->ToPlayer();
+        LunkFollowerInfo const* info = GetLunkInfoBySpell(GetId());
+        if (!player || !info)
+            return;
+
+        if (Creature* lunk = ObjectAccessor::GetCreature(*player, _lunkGUID))
+            if (lunk->IsAIEnabled)
+                lunk->AI()->DoAction(ACTION_LUNK_DISMISS);
+        _lunkGUID.Clear();
+        DismissLunkFollowers(player, info->Entry);
+        if (info->Spell == SPELL_SUMMON_LUNK_RENDAN)
+            for (uint32 spellId : { SPELL_SUMMON_DANCER_1, SPELL_SUMMON_DANCER_2, SPELL_SUMMON_DANCER_3 })
+                player->RemoveAurasDueToSpell(spellId);
+    }
+
+    bool CheckProc(ProcEventInfo& /*eventInfo*/)
+    {
+        if (Player* player = GetTarget()->ToPlayer())
+            ScoldForKill(player);
+        return false;
+    }
+
+    void Register() override
+    {
+        AfterEffectApply += AuraEffectApplyFn(spell_sg_lunk_summon_aura::AfterApply, EFFECT_1, SPELL_AURA_PROC_TRIGGER_SPELL, AURA_EFFECT_HANDLE_REAL);
+        DoEffectCalcPeriodic += AuraEffectCalcPeriodicFn(spell_sg_lunk_summon_aura::CalcPeriodic, EFFECT_1, SPELL_AURA_PROC_TRIGGER_SPELL);
+        OnEffectPeriodic += AuraEffectPeriodicFn(spell_sg_lunk_summon_aura::OnPeriodic, EFFECT_1, SPELL_AURA_PROC_TRIGGER_SPELL);
+        AfterEffectRemove += AuraEffectRemoveFn(spell_sg_lunk_summon_aura::AfterRemove, EFFECT_1, SPELL_AURA_PROC_TRIGGER_SPELL, AURA_EFFECT_HANDLE_REAL);
+        DoCheckProc += AuraCheckProcFn(spell_sg_lunk_summon_aura::CheckProc);
+    }
+
+    ObjectGuid _lunkGUID;
+};
+
+// 88152 - Summon Lunk (effect 0): the Spider Rider giver 47280, cast by a Glassweb Spider's killer (5856 SmartAI id 0)
+// Its SummonProperties 2983 make him public and leave him standing where he appears: anyone could take the quest from him (and
+// his accept row despawned him for his killer), a live one within 100 yd kept other killers from getting theirs, and spiders
+// killed him. Sourced: he runs up and "follows you around for a minute or two" (2010-11-25 [+6], 2011-03-23 [+12]). Now he is
+// the killer's own (private, as the steamsmith giver 47332 already is), follows him for the spell's 2 minutes, and is passive
+// and unattackable (ours).
+class spell_sg_summon_lunk_giver : public SpellScript
+{
+    PrepareSpellScript(spell_sg_summon_lunk_giver);
+
+    void HandleSummon(SpellEffIndex effIndex)
+    {
+        PreventHitDefaultEffect(effIndex);
+
+        Player* player = GetCaster() ? GetCaster()->ToPlayer() : nullptr;
+        if (!player || !player->IsAlive())
+            return;
+
+        Position pos = player->GetNearPosition(4.0f, frand(0.0f, 2.0f * float(M_PI)));
+        TempSummon* lunk = player->SummonCreature(uint32(GetSpellInfo()->Effects[effIndex].MiscValue), pos, TEMPSUMMON_TIMED_DESPAWN,
+            Milliseconds(GetSpellInfo()->GetDuration()), 0, player->GetGUID());
+        if (!lunk)
+            return;
+
+        lunk->SetReactState(REACT_PASSIVE);
+        lunk->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_PC | UNIT_FLAG_IMMUNE_TO_NPC);
+        lunk->SetWalk(false);
+        lunk->GetMotionMaster()->Clear();
+        lunk->GetMotionMaster()->MoveFollow(player, 4.0f, 2.0f);
+    }
+
+    void Register() override
+    {
+        OnEffectHit += SpellEffectFn(spell_sg_summon_lunk_giver::HandleSummon, EFFECT_0, SPELL_EFFECT_SUMMON);
+    }
+};
+
+// A player with a Lunk out kills a creature: Lunk scolds (the kill proc misses critters and mobs that give no experience; the
+// comments have him scold for critters too, 2012-06-15 [+4])
+class player_sg_lunk_kill : public PlayerScript
+{
+public:
+    player_sg_lunk_kill() : PlayerScript("player_sg_lunk_kill") { }
+
+    void OnCreatureKill(Player* killer, Creature* killed) override
+    {
+        if (!killed || !killer->IsInWorld())
+            return;
+
+        ScoldForKill(killer);
+    }
+};
+
 void AddSC_searing_gorge_lunk()
 {
+    new creature_script<npc_sg_lunk_follower>("npc_sg_lunk_follower");
+    new spell_script<spell_sg_lunk_summon>("spell_sg_lunk_summon");
+    new aura_script<spell_sg_lunk_summon_aura>("spell_sg_lunk_summon_aura");
+    new player_sg_lunk_kill();
+    new spell_script<spell_sg_summon_lunk_giver>("spell_sg_summon_lunk_giver");
     new creature_script<npc_sg_dig_boss_dinwhisker>("npc_sg_dig_boss_dinwhisker");
     new creature_script<npc_sg_dinwhisker_controller>("npc_sg_dinwhisker_controller");
 }
