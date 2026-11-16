@@ -2,6 +2,8 @@
  * Searing Gorge: Cauldron events
  *  - Operation: Stir the Cauldron 28052: the Brotherhood Flying Machine 47467, its flight into the Cauldron, the gun at the
  *    landing terrace and the Cauldron Defenders 47470
+ *  - Kill 'em With Sleep Deprivation 28057 / Look at the Size of It! 28058: the pillow event (the Sleepy Dark Iron Workers
+ *    14635 and Chambermaid Pillaclencher 14636, after the first Dark Iron Pillow 179828 is taken)
  *
  * Research: research\searing-gorge\dossiers\cauldron-finale.md (28052 rows 1-14, F3, SP-4), plan section E (E-4). What is
  * sourced and what is ours is said at each script.
@@ -17,6 +19,10 @@
 #include "CombatAI.h"
 #include "CreatureTextMgr.h"
 #include "WorldSession.h"
+#include "GameObject.h"
+#include "GameObjectAI.h"
+#include "Map.h"
+#include "MapManager.h"
 
 // ---------------------------------------------------------------------------------------------------------------------------
 // Operation: Stir the Cauldron 28052
@@ -25,6 +31,7 @@
 enum StirTheCauldron
 {
     QUEST_OPERATION_STIR_THE_CAULDRON   = 28052,
+    QUEST_WELCOME_TO_THE_BROTHERHOOD    = 28064,
 
     NPC_BROTHERHOOD_FLYING_MACHINE      = 47467,   // also the objective's credit entry ("Secure entrance into the Slag Pit")
     NPC_CAULDRON_DEFENDER               = 47470,
@@ -488,7 +495,337 @@ private:
     bool _done = false;
 };
 
+// A rider who logged out in flight is saved where the machine was, high over the Cauldron (his summons go with him), and would
+// fall at the next login (walk M2). Before he enters the world he is moved to the landing point only when all of these hold:
+// he can have been a passenger (28052 in the log, or rewarded while Welcome to the Brotherhood is not: the flight option's own
+// window); map 0; no mount or flight aura; within 40 yd of the machine's route (each flight master's lift, the path, the hover
+// point, the landing); at least 25 yd above the ground or water below him. Anyone standing, riding or flying elsewhere cannot
+// match. As player_badlands_uncrashable (Fuselight rocket). Ours.
+class player_searing_gorge_cauldron_flight : public PlayerScript
+{
+public:
+    player_searing_gorge_cauldron_flight() : PlayerScript("player_searing_gorge_cauldron_flight") { }
+
+    static float DistToSegment(Position const& p, Position const& a, Position const& b)
+    {
+        float const dx = b.GetPositionX() - a.GetPositionX(), dy = b.GetPositionY() - a.GetPositionY(), dz = b.GetPositionZ() - a.GetPositionZ();
+        float const len2 = dx * dx + dy * dy + dz * dz;
+        float t = 0.0f;
+        if (len2 > 0.0f)
+            t = std::max(0.0f, std::min(1.0f, ((p.GetPositionX() - a.GetPositionX()) * dx + (p.GetPositionY() - a.GetPositionY()) * dy + (p.GetPositionZ() - a.GetPositionZ()) * dz) / len2));
+        Position const q(a.GetPositionX() + dx * t, a.GetPositionY() + dy * t, a.GetPositionZ() + dz * t);
+        return p.GetExactDist(&q);
+    }
+
+    void OnLoadFromDB(Player* player) override
+    {
+        QuestStatus const status = player->GetQuestStatus(QUEST_OPERATION_STIR_THE_CAULDRON);
+        bool const inWindow = status == QUEST_STATUS_INCOMPLETE || status == QUEST_STATUS_COMPLETE
+            || (player->GetQuestRewardStatus(QUEST_OPERATION_STIR_THE_CAULDRON) && !player->GetQuestRewardStatus(QUEST_WELCOME_TO_THE_BROTHERHOOD));
+        if (!inWindow)
+            return;
+
+        if (player->GetMapId() != 0 || player->HasAuraType(SPELL_AURA_MOUNTED) || player->HasAuraType(SPELL_AURA_FLY)
+            || player->HasAuraType(SPELL_AURA_MOD_INCREASE_MOUNTED_FLIGHT_SPEED))
+            return;
+
+        // Lanie Reed's and Grisha's spots, 12 yd up (the lift), then the path
+        std::vector<Position> route;
+        route.push_back({ -6559.06f, -1169.38f, 321.9f });
+        route.push_back({ -6559.31f, -1100.25f, 322.4f });
+        route.push_back(MachineFlight[0]);
+        Position const pos = player->GetPosition();
+        bool onPath = DistToSegment(pos, route[0], route[2]) <= 40.0f || DistToSegment(pos, route[1], route[2]) <= 40.0f;
+        std::vector<Position> path(std::begin(MachineFlight), std::end(MachineFlight));
+        path.push_back(MachineHoverPoint);
+        path.push_back(MachineLandingPoint);
+        for (size_t i = 0; i + 1 < path.size() && !onPath; ++i)
+            onPath = DistToSegment(pos, path[i], path[i + 1]) <= 40.0f;
+        if (!onPath)
+            return;
+
+        Map* map = sMapMgr->FindBaseNonInstanceMap(0);
+        if (!map)
+            return;
+        float const below = map->GetWaterOrGroundLevel(PHASEMASK_NORMAL, pos.GetPositionX(), pos.GetPositionY(), pos.GetPositionZ());
+        if (pos.GetPositionZ() < below + 25.0f)
+            return;
+
+        TC_LOG_DEBUG("scripts", "player_searing_gorge_cauldron_flight: %s logged in on the flying machine's route at %.1f %.1f %.1f (%.1f yd up), moved to the landing point",
+            player->GetName().c_str(), pos.GetPositionX(), pos.GetPositionY(), pos.GetPositionZ(), pos.GetPositionZ() - below);
+        player->Relocate(MachineLandingPoint);
+        player->SetFallInformation(0, MachineLandingPoint.GetPositionZ());
+    }
+};
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// The pillow event: Kill 'em With Sleep Deprivation 28057, Look at the Size of It! 28058
+// ---------------------------------------------------------------------------------------------------------------------------
+
+enum PillowEvent
+{
+    GO_DARK_IRON_PILLOW                 = 179828,
+    GO_PILLOW_EVENT_GENERATOR           = 179829,  // "Dark Iron Pillow Event Generator", one spawn in the bunk hall (3132412)
+
+    NPC_SLEEPY_DARK_IRON_WORKER         = 14635,
+    NPC_CHAMBERMAID_PILLACLENCHER       = 14636,
+
+    TALK_WORKER_OUR_PILLAS              = 0,       // BroadcastText 9799 "Our pillas! Someone has stolen our pillas!"
+    TALK_WORKER_NOT_UNPUNISHED          = 1,       // BroadcastText 9800 "We'll not let this act of madness go unpunished!"
+    TALK_CHAMBERMAID_THIEVES            = 0,       // BroadcastText 9810 "Thieves! Scallywags! Rapscallions! ..."
+
+    ACTION_PILLOW_TAKEN                 = 1,
+
+    EVENT_PILLOW_GANG_1                 = 1,
+    EVENT_PILLOW_GANG_2                 = 2,
+    EVENT_PILLOW_CHAMBERMAID            = 3,
+    EVENT_PILLOW_END                    = 4,
+
+    POINT_SLEEPY_PATROL                 = 1,
+};
+
+// Sourced (28057 comments 2011-12-30 [+2] "every 5 minutes after you loot the first pillow" with the times 13:06 / 13:11 /
+// 13:16, 2010-12-27 [+62], OLD 2009-12-24 [+14] "About 12 of these spawn and run as a group", 2011-03-18 [+15] "pace back and
+// forth through that hall" and never leave; 28058 2010-11-26 [+19] / 2013-09-21 [+1] the Chambermaid in the curved hall at
+// 45.82 29.65): 5 min after the first pillow a gang and its yell, 5 min later a second gang and its yell, 5 min later the
+// Chambermaid and her yell. Ours: 10 workers per gang, the patrol line, the Chambermaid's 10 minutes out of combat, the end of
+// the cycle 25 min after the first pillow (the next pillow then starts a new cycle). The gangs never leave (2011-03-18): they
+// pace until killed. The bound is a cap instead: a gang tops the hall up to at most 20 living workers (two gangs), and no second
+// Chambermaid comes while one lives; a grid unload (nobody near) takes them all.
+static uint32 const PillowGangDelay       = 5 * MINUTE * IN_MILLISECONDS;
+static uint32 const PillowChambermaidTime = 10 * MINUTE * IN_MILLISECONDS;
+static uint8  const PillowGangSize        = 10;
+static uint8  const PillowWorkerCap       = 20;
+
+// The gang appears where mop's ten static Sleepy workers stood (their post-event state, removed by 2026_11_21_53)
+static Position const SleepyGangPoints[PillowGangSize] =
+{
+    { -6533.57f, -1344.48f, 208.798f }, { -6540.60f, -1346.88f, 208.874f }, { -6543.31f, -1346.92f, 208.906f },
+    { -6543.34f, -1345.34f, 208.890f }, { -6541.66f, -1344.94f, 208.878f }, { -6545.29f, -1346.00f, 208.906f },
+    { -6540.70f, -1345.85f, 208.866f }, { -6544.54f, -1343.22f, 208.874f }, { -6542.71f, -1347.73f, 208.912f },
+    { -6542.17f, -1343.94f, 208.870f },
+};
+
+static Position const ChambermaidPoint = { -6540.42f, -1348.01f, 208.904f, 2.5f };   // mop's static spot = the comment's pin
+
+// The bunk hall's walkway, between the two curved rows of bunks (the pillow spots); floor z 208.8-209.0 under a 222 ceiling at
+// every point (vmap, ground.py). Ours.
+static Position const SleepyPatrol[] =
+{
+    { -6566.0f, -1318.0f, 208.8f }, { -6560.0f, -1332.0f, 208.8f }, { -6552.0f, -1341.0f, 209.0f },
+    { -6541.0f, -1348.0f, 208.9f }, { -6528.0f, -1352.0f, 208.9f }, { -6514.0f, -1354.0f, 209.0f },
+};
+
+/*######
+## 179829 Dark Iron Pillow Event Generator (one spawn, displayId 0): the event's timeline. One cycle at a time; pillows taken
+## while it runs change nothing. Everything it summons is public (the comments speak of other players' gangs and of a
+## Chambermaid already waiting). Objects update only in loaded grids: with nobody in the Slag Pit the grid unloads, the
+## summons with it, and the generator starts idle again.
+######*/
+
+struct go_searing_gorge_pillow_event_generator : public GameObjectAI
+{
+    go_searing_gorge_pillow_event_generator(GameObject* go) : GameObjectAI(go) { }
+
+    void DoAction(int32 action) override
+    {
+        if (action != ACTION_PILLOW_TAKEN || _running)
+            return;
+
+        _running = true;
+        _events.Reset();
+        _events.ScheduleEvent(EVENT_PILLOW_GANG_1, Milliseconds(PillowGangDelay));
+        _events.ScheduleEvent(EVENT_PILLOW_GANG_2, Milliseconds(2 * PillowGangDelay));
+        _events.ScheduleEvent(EVENT_PILLOW_CHAMBERMAID, Milliseconds(3 * PillowGangDelay));
+        _events.ScheduleEvent(EVENT_PILLOW_END, Milliseconds(3 * PillowGangDelay + PillowChambermaidTime));
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        if (!_running)
+            return;
+
+        _events.Update(diff);
+        while (uint32 eventId = _events.ExecuteEvent())
+        {
+            switch (eventId)
+            {
+                case EVENT_PILLOW_GANG_1:
+                    SummonGang(TALK_WORKER_OUR_PILLAS);
+                    break;
+                case EVENT_PILLOW_GANG_2:
+                    SummonGang(TALK_WORKER_NOT_UNPUNISHED);
+                    break;
+                case EVENT_PILLOW_CHAMBERMAID:
+                {
+                    // She stays 10 min out of combat, then goes; on her death her SmartAI summons the Ornate Pillow (2026_11_21_53)
+                    Creature* old = _maidGUID.IsEmpty() ? nullptr : ObjectAccessor::GetCreature(*me, _maidGUID);
+                    if (old && old->IsAlive())
+                        break;
+                    if (TempSummon* maid = me->SummonCreature(NPC_CHAMBERMAID_PILLACLENCHER, ChambermaidPoint,
+                        TEMPSUMMON_TIMED_DESPAWN_OUT_OF_COMBAT, Milliseconds(PillowChambermaidTime)))
+                    {
+                        _maidGUID = maid->GetGUID();
+                        sCreatureTextMgr->SendChat(maid, TALK_CHAMBERMAID_THIEVES);
+                    }
+                    break;
+                }
+                case EVENT_PILLOW_END:
+                    _running = false;
+                    break;
+                default:
+                    break;
+            }
+        }
+    }
+
+private:
+    void SummonGang(uint8 talkGroup)
+    {
+        // Forget the dead and the gone; top the hall up to the cap
+        uint8 living = 0;
+        for (auto itr = _workers.begin(); itr != _workers.end();)
+        {
+            Creature* worker = ObjectAccessor::GetCreature(*me, *itr);
+            if (worker && worker->IsAlive())
+            {
+                ++living;
+                ++itr;
+            }
+            else
+                itr = _workers.erase(itr);
+        }
+
+        bool yelled = false;
+        for (Position const& point : SleepyGangPoints)
+        {
+            if (living >= PillowWorkerCap)
+                break;
+
+            TempSummon* worker = me->SummonCreature(NPC_SLEEPY_DARK_IRON_WORKER, point, TEMPSUMMON_CORPSE_TIMED_DESPAWN, 60s);
+            if (!worker)
+                continue;
+
+            _workers.push_back(worker->GetGUID());
+            ++living;
+            if (!yelled)
+            {
+                yelled = true;
+                sCreatureTextMgr->SendChat(worker, talkGroup);
+            }
+        }
+    }
+
+    EventMap _events;
+    std::vector<ObjectGuid> _workers;
+    ObjectGuid _maidGUID;
+    bool _running = false;
+};
+
+/*######
+## 179828 Dark Iron Pillow: opening one starts the generator's cycle (the open-lock path asks the object's AI before the loot,
+## Spell::SendLoot; GameObject::Use does too). The loot itself is untouched. The chest's lootedEvent 8540, which no
+## event_scripts row in mop or either TDB carries, is where retail hooked it (I).
+######*/
+
+struct go_searing_gorge_dark_iron_pillow : public GameObjectAI
+{
+    go_searing_gorge_dark_iron_pillow(GameObject* go) : GameObjectAI(go) { }
+
+    bool OnGossipHello(Player* /*player*/, bool /*isUse*/) override
+    {
+        if (GameObject* generator = me->FindNearestGameObject(GO_PILLOW_EVENT_GENERATOR, 100.0f))
+            if (generator->AI())
+                generator->AI()->DoAction(ACTION_PILLOW_TAKEN);
+        return false;
+    }
+};
+
+/*######
+## 14635 Sleepy Dark Iron Worker: summoned by the generator only. Paces the walkway of the bunk hall back and forth at a walk
+## (ours) and fights whoever it meets (faction 54); after an evade it goes back to pacing from where it was summoned.
+######*/
+
+struct npc_searing_gorge_sleepy_worker : public ScriptedAI
+{
+    npc_searing_gorge_sleepy_worker(Creature* creature) : ScriptedAI(creature)
+    {
+        // Each walks a little beside the line, so the gang does not move as one body
+        _offsetX = frand(-2.0f, 2.0f);
+        _offsetY = frand(-2.0f, 2.0f);
+        _direction = urand(0, 1) ? 1 : -1;
+    }
+
+    void Reset() override
+    {
+        me->SetWalk(true);
+        _index = NearestPatrolPoint();
+        _moveTimer = urand(1000, 3000);
+    }
+
+    void MovementInform(uint32 type, uint32 id) override
+    {
+        if (type != POINT_MOTION_TYPE || id != POINT_SLEEPY_PATROL)
+            return;
+
+        int32 const last = int32(std::size(SleepyPatrol)) - 1;
+        if (_index + _direction < 0 || _index + _direction > last)
+            _direction = -_direction;
+        _index += _direction;
+        _moveTimer = urand(500, 2500);
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        if (!UpdateVictim())
+        {
+            if (me->IsInEvadeMode() || me->GetMotionMaster()->GetCurrentMovementGeneratorType() != IDLE_MOTION_TYPE)
+                return;
+
+            if (_moveTimer <= diff)
+            {
+                _moveTimer = 5000;   // a point that cannot be reached is tried again
+                Position const& point = SleepyPatrol[_index];
+                me->GetMotionMaster()->MovePoint(POINT_SLEEPY_PATROL, point.GetPositionX() + _offsetX, point.GetPositionY() + _offsetY,
+                    point.GetPositionZ());
+            }
+            else
+                _moveTimer -= diff;
+            return;
+        }
+
+        DoMeleeAttackIfReady();
+    }
+
+private:
+    int32 NearestPatrolPoint() const
+    {
+        int32 best = 0;
+        float bestDist = std::numeric_limits<float>::max();
+        for (int32 i = 0; i < int32(std::size(SleepyPatrol)); ++i)
+        {
+            float const dist = me->GetExactDist2d(&SleepyPatrol[i]);
+            if (dist < bestDist)
+            {
+                bestDist = dist;
+                best = i;
+            }
+        }
+        return best;
+    }
+
+    float _offsetX = 0.0f;
+    float _offsetY = 0.0f;
+    int32 _index = 0;
+    int32 _direction = 1;
+    uint32 _moveTimer = 0;
+};
+
 void AddSC_searing_gorge_cauldron()
 {
     new creature_script<npc_searing_gorge_flying_machine>("npc_searing_gorge_flying_machine");
+    RegisterGameObjectAI(go_searing_gorge_pillow_event_generator);
+    RegisterGameObjectAI(go_searing_gorge_dark_iron_pillow);
+    new creature_script<npc_searing_gorge_sleepy_worker>("npc_searing_gorge_sleepy_worker");
+    new player_searing_gorge_cauldron_flight();
 }
