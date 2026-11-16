@@ -638,8 +638,14 @@ private:
                 {
                     deathwing->InterruptNonMeleeSpells(false);
                     deathwing->RemoveAurasDueToSpell(SPELL_RG_DEATHWING_FLYSITGROUND);
+                    // Flying for the client too: Creature::SetFlying sets the Fly animation tier (UNIT_FIELD_BYTES_1 byte 3), from
+                    // which the client picks FlyRun / FlyStand instead of Walk / Run (CGUnit_C::UpdateAnimKitMgrTier); gravity
+                    // alone leaves him on the Ground tier, walking through the air. 46957's template carries
+                    // CREATURE_FLAG_EXTRA_NO_MOVE_FLAGS_UPDATE (2026_11_20_94): otherwise the movement flag update, seeing him
+                    // still on the ground in the first tick of the climb and with no flight in his template, takes the flight
+                    // and the tier off again for good
                     deathwing->SetCanFly(true);
-                    deathwing->SetDisableGravity(true);
+                    deathwing->SetFlying(true);
                     deathwing->SetSpeed(MOVE_RUN, 2.5f);
                     deathwing->SetSpeed(MOVE_FLIGHT, 2.5f);
                     std::vector<Position> path(1, deathwing->GetPosition());
