@@ -1001,11 +1001,14 @@ private:
     Position _fistFrom;
 
 public:
-    // Sends a flying actor along a smooth path and lets it go once out of sight
+    // Sends a flying actor along a smooth path and lets it go once out of sight. Creature::SetFlying puts him on the Fly
+    // animation tier (UNIT_FIELD_BYTES_1 byte 3), from which the client picks FlyRun / FlyStand; gravity alone leaves the Ground
+    // tier and he walks through the air. Nothing takes it off again: MoveSmoothPath is an effect movement, for which
+    // Creature::UpdateMovementFlags does nothing, and after the path a creature with gravity off counts as flying (CanFly)
     static void FlyAway(Creature* actor, Position const* points, size_t count)
     {
         actor->SetCanFly(true);
-        actor->SetDisableGravity(true);
+        actor->SetFlying(true);
         actor->SetSpeed(MOVE_FLIGHT, 3.0f);
         actor->SetSpeed(MOVE_RUN, 3.0f);
 
