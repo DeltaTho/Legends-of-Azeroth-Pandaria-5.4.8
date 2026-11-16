@@ -1093,8 +1093,232 @@ public:
     }
 };
 
+enum SearingGorgeDancers
+{
+    NPC_IRON_SUMMIT_DANCER_1        = 47435,
+    NPC_IRON_SUMMIT_DANCER_2        = 47436,
+    NPC_IRON_SUMMIT_DANCER_3        = 47437,
+
+    EVENT_DANCER_CHECK              = 1,
+
+    ANIMKIT_DANCE_LOOP              = 1535,     // AnimKit 1535: one full-body segment, anim 69 EmoteDance, looping
+};
+
+static uint32 GetDancerSpell(uint32 entry)
+{
+    switch (entry)
+    {
+        case NPC_IRON_SUMMIT_DANCER_1: return SPELL_SUMMON_DANCER_1;
+        case NPC_IRON_SUMMIT_DANCER_2: return SPELL_SUMMON_DANCER_2;
+        case NPC_IRON_SUMMIT_DANCER_3: return SPELL_SUMMON_DANCER_3;
+        default:                       return 0;
+    }
+}
+
+static uint32 GetDancerEntry(uint32 spellId)
+{
+    switch (spellId)
+    {
+        case SPELL_SUMMON_DANCER_1: return NPC_IRON_SUMMIT_DANCER_1;
+        case SPELL_SUMMON_DANCER_2: return NPC_IRON_SUMMIT_DANCER_2;
+        case SPELL_SUMMON_DANCER_3: return NPC_IRON_SUMMIT_DANCER_3;
+        default:                    return 0;
+    }
+}
+
+// 47435, 47436, 47437 - Iron Summit Guard, dancing behind the player on Rendan's Weakness (Summon Dancer 1-3, cast by the player
+// at a guard's "Care to join our dance?")
+// What the player sees (sourced: comments 2011-01-19 [+22], 2011-02-20 [+9] "every character you approach joins in", screenshot
+// 202161 of a guard dancing): each guard he talks to joins a dancing line behind him; the third completes the quest; they go at
+// the turn-in at Rendan.
+// The summons are guardians (SummonProperties 830), which here neither follow nor keep out of fights (gate GL-U3). Ours: the line
+// (dancer 1 follows the player, dancer 2 dancer 1, dancer 3 dancer 2, 2 yd apart), unattackable and passive, dancing by emote
+// state 10 (they run when they move, dance when they stand), brought along when left 50 yd behind, gone with their aura
+// (handed in, abandoned, leaving the zone, death: spell_sg_lunk_summon_aura removes the three with Lunk's).
+struct npc_sg_iron_summit_dancer : public ScriptedAI
+{
+    npc_sg_iron_summit_dancer(Creature* creature) : ScriptedAI(creature) { }
+
+    void IsSummonedBy(Unit* summoner) override
+    {
+        if (!summoner->IsPlayer())
+            return;
+
+        _ownerGUID = summoner->GetGUID();
+        Setup();
+        _events.Reset();
+        // Spell::SummonGuardian sets level, faction and the guardian's stats after this hook: set up again then
+        _events.ScheduleEvent(EVENT_DANCER_CHECK, 500ms);
+    }
+
+    void Reset() override { }
+    void MoveInLineOfSight(Unit* /*who*/) override { }
+    void AttackStart(Unit* /*who*/) override { }
+    void EnterEvadeMode(EvadeReason /*why*/) override { }
+
+    void UpdateAI(uint32 diff) override
+    {
+        _events.Update(diff);
+        while (uint32 eventId = _events.ExecuteEvent())
+        {
+            if (eventId != EVENT_DANCER_CHECK)
+                continue;
+
+            _events.ScheduleEvent(EVENT_DANCER_CHECK, 1s);
+            Check();
+        }
+    }
+
+private:
+    void Setup()
+    {
+        me->SetReactState(REACT_PASSIVE);
+        me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_PC | UNIT_FLAG_IMMUNE_TO_NPC);
+        me->SetEmoteState(EMOTE_STATE_DANCE);
+        me->setActive(true, ActiveFlags::Script);
+    }
+
+    Creature* GetDancer(Player* owner, uint32 entry) const
+    {
+        std::list<Creature*> dancers;
+        owner->GetAllMinionsByEntry(dancers, entry);
+        for (Creature* dancer : dancers)
+            if (dancer->IsAlive() && !dancer->IsDestroyedObject())
+                return dancer;
+        return nullptr;
+    }
+
+    void Check()
+    {
+        Player* owner = ObjectAccessor::GetPlayer(*me, _ownerGUID);
+        if (!owner || !owner->IsInWorld() || !owner->HasAura(GetDancerSpell(me->GetEntry())))
+        {
+            _events.Reset();
+            me->DespawnOrUnsummon();
+            return;
+        }
+
+        if (!_setupDone)
+        {
+            Setup();
+            _setupDone = true;
+        }
+
+        if (!owner->IsInFlight() && !me->IsWithinDistInMap(owner, 50.0f))
+        {
+            Position pos = owner->GetNearPosition(3.0f, float(M_PI));
+            me->NearTeleportTo(pos.GetPositionX(), pos.GetPositionY(), pos.GetPositionZ(), owner->GetOrientation());
+            _leaderGUID.Clear();
+        }
+
+        Unit* leader = owner;
+        if (me->GetEntry() == NPC_IRON_SUMMIT_DANCER_2)
+        {
+            if (Creature* first = GetDancer(owner, NPC_IRON_SUMMIT_DANCER_1))
+                leader = first;
+        }
+        else if (me->GetEntry() == NPC_IRON_SUMMIT_DANCER_3)
+        {
+            if (Creature* second = GetDancer(owner, NPC_IRON_SUMMIT_DANCER_2))
+                leader = second;
+            else if (Creature* first = GetDancer(owner, NPC_IRON_SUMMIT_DANCER_1))
+                leader = first;
+        }
+
+        if (leader->GetGUID() != _leaderGUID || me->GetMotionMaster()->GetCurrentMovementGeneratorType() != FOLLOW_MOTION_TYPE)
+        {
+            _leaderGUID = leader->GetGUID();
+            me->SetWalk(false);
+            me->GetMotionMaster()->Clear();
+            me->GetMotionMaster()->MoveFollow(leader, 2.0f, float(M_PI));
+        }
+    }
+
+    ObjectGuid _ownerGUID;
+    ObjectGuid _leaderGUID;
+    EventMap _events;
+    bool _setupDone = false;
+};
+
+// 88457, 88459, 88460 - Summon Dancer 1-3 (effect 1, the dummy aura on the player; spell_custom_attribute DONT_SAVE: a relog
+// starts the line again, the guardians do not outlive a logout). Removed, its dancer goes.
+class spell_sg_summon_dancer : public AuraScript
+{
+    PrepareAuraScript(spell_sg_summon_dancer);
+
+    void AfterRemove(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
+    {
+        if (uint32 entry = GetDancerEntry(GetId()))
+            GetTarget()->RemoveAllMinionsByEntry(entry);
+    }
+
+    void Register() override
+    {
+        AfterEffectRemove += AuraEffectRemoveFn(spell_sg_summon_dancer::AfterRemove, EFFECT_1, SPELL_AURA_DUMMY, AURA_EFFECT_HANDLE_REAL);
+    }
+};
+
+// 88451 - Lunk's Infectious Dance, cast by the dancing Lunk 47430 on himself (APPLY_AREA_AURA_FRIEND, dummy, 30 yd)
+// Sourced: the player danced too while Lunk was with him, walking, fighting, mounted and flying, and stopped once far from Lunk
+// (27959/28034 comments 2011-02-20 [+9], 2011-02-27 [+15] "the upper body turned around, but not the legs", 2011-08-23 [+5]
+// "flew to the Badlands and I stopped, seems you need Lunk", 2011-11-03 [+5], 2013-03-12, 2013-12-21 [+3]); Wowhead: "Only
+// Target If Same Creator". Here the aura reaches only Lunk's owner and the owner's dancers (the area aura would otherwise land on
+// every friendly unit within 30 yd, strangers who cannot see Lunk included). On the owner it plays a dance: AnimKit 1535 (one
+// full-body EmoteDance segment, looping) as his AI anim kit, ours, since the aura's own client visual cannot be read here; it
+// ends when the aura does (Lunk gone, or the owner more than 30 yd from him).
+class spell_sg_lunks_infectious_dance : public AuraScript
+{
+    PrepareAuraScript(spell_sg_lunks_infectious_dance);
+
+    bool CheckAreaTarget(Unit* target)
+    {
+        Unit* caster = GetCaster();
+        if (!caster || target == caster)
+            return true;
+
+        ObjectGuid owner = caster->GetOwnerGUID();
+        if (!owner)
+            return false;
+        if (target->GetGUID() == owner)
+            return true;
+
+        switch (target->GetEntry())
+        {
+            case NPC_IRON_SUMMIT_DANCER_1:
+            case NPC_IRON_SUMMIT_DANCER_2:
+            case NPC_IRON_SUMMIT_DANCER_3:
+                return target->GetOwnerGUID() == owner;
+            default:
+                return false;
+        }
+    }
+
+    void AfterApply(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
+    {
+        if (Player* player = GetTarget()->ToPlayer())
+            player->SetAIAnimKitId(ANIMKIT_DANCE_LOOP);
+    }
+
+    void AfterRemove(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
+    {
+        if (Player* player = GetTarget()->ToPlayer())
+            if (player->GetAIAnimKitId() == ANIMKIT_DANCE_LOOP)
+                player->SetAIAnimKitId(0);
+    }
+
+    void Register() override
+    {
+        DoCheckAreaTarget += AuraCheckAreaTargetFn(spell_sg_lunks_infectious_dance::CheckAreaTarget);
+        AfterEffectApply += AuraEffectApplyFn(spell_sg_lunks_infectious_dance::AfterApply, EFFECT_0, SPELL_AURA_DUMMY, AURA_EFFECT_HANDLE_REAL);
+        AfterEffectRemove += AuraEffectRemoveFn(spell_sg_lunks_infectious_dance::AfterRemove, EFFECT_0, SPELL_AURA_DUMMY, AURA_EFFECT_HANDLE_REAL);
+    }
+};
+
 void AddSC_searing_gorge_lunk()
 {
+    new aura_script<spell_sg_lunks_infectious_dance>("spell_sg_lunks_infectious_dance");
+    new creature_script<npc_sg_iron_summit_dancer>("npc_sg_iron_summit_dancer");
+    new aura_script<spell_sg_summon_dancer>("spell_sg_summon_dancer");
     new creature_script<npc_sg_lunk_follower>("npc_sg_lunk_follower");
     new spell_script<spell_sg_lunk_summon>("spell_sg_lunk_summon");
     new aura_script<spell_sg_lunk_summon_aura>("spell_sg_lunk_summon_aura");
