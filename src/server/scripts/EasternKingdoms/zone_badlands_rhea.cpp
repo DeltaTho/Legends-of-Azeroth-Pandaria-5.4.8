@@ -155,6 +155,7 @@ enum RheasGift
     EVENT_RG_RHEA_FALLS,
     EVENT_RG_BREATH_AGAIN,
     EVENT_RG_FLIES_OFF,
+    EVENT_RG_CAMERA_OUT,
     EVENT_RG_SHOT_HIDING_PLACE,
     EVENT_RG_END,
 
@@ -178,10 +179,20 @@ Position const RgCameraSpot = { -6534.23f, -2394.83f, 293.107f };
 // tunnel (floor 305.2, ceiling 314.8). From there the seat 0 view looks down the tunnel at the back of the cave, 19 yd away: the
 // note (17 yd, 19 degrees off the axis) and the egg (3 degrees) lie well inside the picture, and Rhea, summoned in the mouth behind the camera, walks past it
 // into the picture. Seat 1 from the same spot turns round to Deathwing at the entrance (31 yd; the aim 15 yd above him is 7
-// degrees up, through the open mouth): his head, which reaches 16 yd in front of him (Deathwing.m2 at display scale 1.5), is
-// about 15 yd away. When he flies off the camera flies back out and down (seat 1 still following him) to a spot 4.8 yd above the
-// bushes, 11 yd from the mirror image, and cuts to seat 2: the view looks down at the player's copy. Every point of both flights
-// is 2 yd or more clear of ground and ceiling.
+// degrees up, through the open mouth): his head, which reaches 16 yd in front of him, is about 15 yd away. His model is far
+// wider than its Stand box (Deathwing.m2 skinned at display scale 1.5): the wings reach +-40 yd sideways in ChannelCastOmni (the
+// breath) and +-46 yd in FlySitGroundUp / ToFly / FlyRun / FlyStand (lift-off and flight). The tunnel spot lies on the line his
+// breath takes from his mouth to Rhea, and the tunnel is the only view into the cave, so with his first line the camera cranes
+// out: under the tunnel roof's edge, straight up the open cut in front of his head (11.5 yd from his mesh at the closest, 2.25 yd
+// sideways from rock), over the hill to a spot 28 yd above the hillside south-west of the entrance. From there the aim 15 yd
+// above him puts his mouth 8 degrees right of and 5 below the centre, his nose 12 / 7, the tunnel mouth his breath goes into
+// 21 / 11 and the breath's middle 19 / 11 (the frame is +-36 / +-22 at 16:9), all in sight; the eye is 51 yd from the breath's
+// box and 42 yd from his wings during it. As he lifts off and turns north-west his left wing comes no closer than 16 yd (18 if
+// the client does not pitch him along the climb). 2 s later the camera flies north down the slope, below and behind him (22 yd
+// or more from his mesh), to a spot 4.8 yd above the bushes, 11 yd from the mirror image, and cuts to seat 2: the view looks
+// down at the player's copy. Every point of the three flights is 4 yd or more clear of ground and ceiling vertically. (Checked
+// by stepping the FlyCurve splines and his path, his yaw and climb along it, against his skinned mesh in every frame of those
+// animations, the extracted maps and the vmaps.)
 Position const RgCameraFlyIn[] =
 {
     { -6531.5f, -2398.0f, 300.0f },
@@ -189,10 +200,21 @@ Position const RgCameraFlyIn[] =
     { -6484.0f, -2448.5f, 312.5f },
     { -6473.5f, -2461.5f, 310.5f }
 };
+Position const RgCameraCrane[] =
+{
+    { -6475.0f, -2458.0f, 311.5f },
+    { -6475.5f, -2456.0f, 313.0f },
+    { -6475.5f, -2456.0f, 320.0f },
+    { -6475.5f, -2456.0f, 327.0f },
+    { -6478.0f, -2459.0f, 332.0f },
+    { -6484.0f, -2466.0f, 335.0f },
+    { -6496.0f, -2475.0f, 337.0f },
+    { -6522.0f, -2488.0f, 343.0f }
+};
 Position const RgCameraFlyOut[] =
 {
-    { -6484.0f, -2448.5f, 313.5f },
-    { -6508.0f, -2421.0f, 309.0f },
+    { -6510.0f, -2460.0f, 322.0f },
+    { -6515.0f, -2430.0f, 305.0f },
     { -6527.0f, -2396.0f, 299.0f }
 };
 
@@ -409,8 +431,9 @@ private:
 // she is shown), Deathwing's way off, the egg pick-up emote.
 //  t+0 the camera flies up to the cave; Rhea appears in the mouth, the egg lies at the back. t+5.5 Rhea walks in. t+16 the note.
 //  t+18.5 to the egg; t+20.5 the egg; t+22.5 she takes it; t+23.5 back towards the exit, Deathwing lands at the entrance.
-//  t+26.5 "it's you"; t+28 seat 1; t+29 / 32.5 Deathwing; t+35 Rhea; t+37.5 / 39 Deathwing yells; t+40.5 and t+43.5 the breath,
-//  t+42.5 Rhea falls; t+46.5 Deathwing flies off, the camera flies back out; t+51 seat 2; t+54 the end (within the summons' 120 s).
+//  t+26.5 "it's you"; t+28 seat 1; t+29 / 32.5 Deathwing, the camera cranes out of the tunnel (to t+36.6); t+35 Rhea; t+37.5 / 39
+//  Deathwing yells; t+40.5 and t+43.5 the breath, t+42.5 Rhea falls; t+46.5 Deathwing flies off; t+48.5 the camera flies down to
+//  the bushes (there at t+53.6); t+54 seat 2; t+57 the end (within the summons' 120 s).
 // Every way out ends it once and completes the quest (the scene's end, death, getting off the seat, never being seated, the
 // camera unsummoned by anything else, the player gone from the map; a logout: player_badlands_rg_login), as retail completed it
 // when the camera broke or the scene was skipped (2011-05-07, 2011-05-30). Abandoning the quest during the scene ends it without
@@ -578,6 +601,10 @@ private:
                 break;
             case EVENT_RG_WHELP:
                 DeathwingSays(TALK_RG_DEATHWING_WHELP, player);
+                // Out of his breath's way, seat 1 still on him: about 7.6 s (see RgCameraFlyIn's note)
+                me->SetSpeed(MOVE_RUN, 1.5f);
+                me->SetSpeed(MOVE_FLIGHT, 1.5f);
+                FlyCurve(std::begin(RgCameraCrane), std::end(RgCameraCrane), 3.0f);
                 break;
             case EVENT_RG_READY_TO_DIE:
                 DeathwingSays(TALK_RG_DEATHWING_READY, player);
@@ -620,6 +647,9 @@ private:
                     deathwing->GetMotionMaster()->Clear();
                     deathwing->GetMotionMaster()->MoveSmoothPath(POINT_RG_FLY_OFF, path.data(), path.size(), false, true);
                 }
+                break;
+            case EVENT_RG_CAMERA_OUT:
+                // Once he is well up and away: about 5.1 s to the bushes (see RgCameraFlyIn's note)
                 me->SetSpeed(MOVE_RUN, 3.0f);
                 me->SetSpeed(MOVE_FLIGHT, 3.0f);
                 FlyCurve(std::begin(RgCameraFlyOut), std::end(RgCameraFlyOut), 6.0f);
@@ -666,8 +696,9 @@ private:
         _events.ScheduleEvent(EVENT_RG_RHEA_FALLS, 42500ms);
         _events.ScheduleEvent(EVENT_RG_BREATH_AGAIN, 43500ms);
         _events.ScheduleEvent(EVENT_RG_FLIES_OFF, 46500ms);
-        _events.ScheduleEvent(EVENT_RG_SHOT_HIDING_PLACE, 51s);
-        _events.ScheduleEvent(EVENT_RG_END, 54s);
+        _events.ScheduleEvent(EVENT_RG_CAMERA_OUT, 48500ms);
+        _events.ScheduleEvent(EVENT_RG_SHOT_HIDING_PLACE, 54s);
+        _events.ScheduleEvent(EVENT_RG_END, 57s);
     }
 
     void RheaWalksTo(Position const& stop)
