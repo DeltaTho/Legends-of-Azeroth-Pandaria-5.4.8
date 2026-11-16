@@ -836,9 +836,15 @@ struct npc_badlands_theldurin_story : public npc_badlands_story_vehicle
 
     void DoAction(int32 action) override
     {
-        // The leap lands 0.2 s after the cast (5 yd at the jump's speed); the punch comes then
-        if (action == ACTION_TDDC_FIST && !_punched)
+        // The leap lands 0.2 s after the cast (5 yd at the jump's speed); the punch comes then. Where the Fist was pressed is kept:
+        // the spell's jump has only been launched (Spell::EffectJumpDest at launch), the vehicle still stands at the take-off
+        // (a punch already on its way keeps the take-off of its own Fist: Deathwing's DamageTaken asks for a punch too)
+        if (action == ACTION_TDDC_FIST && !_punched && !_punchPending)
+        {
+            _punchPending = true;
+            _fistFrom = me->GetPosition();
             _events.ScheduleEvent(EVENT_TDDC1_PUNCH, 300ms);
+        }
     }
 
 protected:
@@ -918,31 +924,48 @@ private:
     // would run at the take-off, 86563 with the vehicle itself as its enemy target): 86563 on the nearest elemental, or Deathwing,
     // within 10 yd in front, which deals the cone's damage and knocks back; every closed rock wall within 10 yd in front opens
     // (86564: ACTIVATE_OBJECT, "open"; the walls close again by their template's autoClose). Punching Deathwing gives the last
-    // credit whether or not the punch lands (he is level 87: a level 47 spell rarely hits him) and ends the story 3 s later
+    // credit whether or not the punch lands (he is level 87: a level 47 spell rarely hits him) and ends the story 3 s later.
+    // In reach is what is within 10 yd in front of the landing point or in front of the take-off: the leap carries Theldurin
+    // 5 yd on, past an elemental that stood at his fists when the button was pressed (an elemental's melee reaches about 3.8 yd
+    // from Theldurin's centre), and from the landing point alone that elemental is behind him and was never punched. Only a
+    // creature the punch can land on is chosen (one that is evading, or behind a closed wall, would take the punch and nothing
+    // would happen: the spell's own line-of-sight check drops the whole cast without a word)
     void Punch(Player* player)
     {
+        _punchPending = false;
         if (_punched || !IsControlling(player))
             return;
 
         Unit* target = nullptr;
-        float best = TheldurinPunchRange;
+        float best = 0.0f;
         Creature* deathwing = nullptr;
 
         std::list<Creature*> creatures;
-        me->GetCreatureListWithEntryInGrid(creatures, NPC_DANG_BLASTED_ROCK_ELEMENTAL, TheldurinPunchRange + 10.0f);
-        me->GetCreatureListWithEntryInGridAppend(creatures, NPC_TDDC_DEATHWING, TheldurinPunchRange + 20.0f);
+        me->GetCreatureListWithEntryInGrid(creatures, NPC_DANG_BLASTED_ROCK_ELEMENTAL, TheldurinPunchRange + 15.0f);
+        me->GetCreatureListWithEntryInGridAppend(creatures, NPC_TDDC_DEATHWING, TheldurinPunchRange + 25.0f);
         for (Creature* creature : creatures)
         {
-            if (!creature->IsAlive() || !me->InSamePhase(creature) || !me->isInFront(creature, float(M_PI)))
+            if (!creature->IsAlive() || !me->InSamePhase(creature))
                 continue;
 
-            float const dist = me->GetDistance(creature);
-            if (dist > TheldurinPunchRange)
+            float const size = me->GetObjectSize() + creature->GetObjectSize();
+            bool const fromLanding = me->isInFront(creature, float(M_PI)) && me->GetDistance(creature) <= TheldurinPunchRange;
+            bool const fromTakeOff = _fistFrom.HasInArc(float(M_PI), creature) && _fistFrom.GetExactDist(creature) - size <= TheldurinPunchRange;
+            if (!fromLanding && !fromTakeOff)
                 continue;
 
-            if (creature->GetEntry() == NPC_TDDC_DEATHWING)
+            // Deathwing's credit keeps its own rule: within 10 yd in front of the landing point
+            if (creature->GetEntry() == NPC_TDDC_DEATHWING && fromLanding)
                 deathwing = creature;
-            if (dist <= best)
+
+            // The spell's own range check (Spell::CheckRange, strict for a triggered cast too) is made from where the vehicle is
+            // now: a creature at the side of the take-off at full reach can be beyond it from the landing point
+            if (creature->IsInEvadeMode() || !me->IsValidAttackTarget(creature) || !me->IsWithinCombatRange(creature, TheldurinPunchRange)
+                || !me->IsWithinLOSInMap(creature))
+                continue;
+
+            float const dist = me->GetExactDist(creature) - size;
+            if (!target || dist < best)
             {
                 best = dist;
                 target = creature;
@@ -953,7 +976,7 @@ private:
         if (deathwing)
             _punched = true;
 
-        if (target && me->IsValidAttackTarget(target))
+        if (target)
             me->CastSpell(target, SPELL_TDDC1_KNOCKBACK_ELEMENTAL, true);
 
         std::list<GameObject*> walls;
@@ -974,6 +997,8 @@ private:
     }
 
     bool _punched = false;
+    bool _punchPending = false;
+    Position _fistFrom;
 
 public:
     // Sends a flying actor along a smooth path and lets it go once out of sight
