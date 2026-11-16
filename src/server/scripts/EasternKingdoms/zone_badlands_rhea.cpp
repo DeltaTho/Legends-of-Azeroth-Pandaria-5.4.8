@@ -98,8 +98,8 @@ enum RheasGift
     SPELL_RG_CANCEL_PHASE_AND_TELEPORT          = 87437,    // removes 87436, teleports to the mirror image's spot
     SPELL_RG_MIRROR_IMAGE_AURA                  = 87439,
     SPELL_RG_SUMMON_DEATHWING                   = 87442,
-    SPELL_RG_CHANNEL_TO_DEATHWING               = 87444,    // the camera's aim for seat 1 (only its channel object is used)
-    SPELL_RG_CHANNEL_TO_MIRROR_IMAGE            = 87446,    // the camera's aim for seat 2 (its KILL_CREDIT targets 105, NYI here)
+    // 87444 RG: Channel to Deathwing and 87446 RG: Channel to Player Mirror Image (the camera's aims for seats 1 and 2) are not
+    // used: only their channel object is, set by hand (Aim); 87446's KILL_CREDIT targets 105, NYI here
     SPELL_RG_FLAME_BREATH                       = 87455,    // Deathwing's cosmetic breath, a 3 s channel on himself
     // 87456 RG: Summon Note (206504 for 60 s) is not used: the static note stands 0.4 yd from its spot (EVENT_RG_NOTE)
     SPELL_RG_HOLD_EGG                           = 87457,
@@ -117,7 +117,10 @@ enum RheasGift
     //  seat 2, mode 94 "RG Event 3" (flags 0x174, target base 1, no offset): looks at the camera's channel object, the mirror image.
     // Without a channel object the second target is invalid and the view falls back to the vehicle's own facing: retail's
     // "camera turned around and just stood there" (2011-05-08). FOV 90 for all three: at 16:9 about +-22 degrees vertically and
-    // +-36 horizontally (vertical = FOV / sqrt(aspect^2 + 1))
+    // +-36 horizontally (vertical = FOV / sqrt(aspect^2 + 1)).
+    // The camera reads only the channel object (CCameraTarget::CalcTargetGUID). The channel spell field is left empty: the
+    // client draws a channel spell's channel kit from the unit to its channel object (CGUnit_C::UpdateChannelEffects), and
+    // 87444's SpellMisc visual 277 drew a blue beam from the eye to Deathwing across the whole seat 1 shot
     RG_SEAT_CAVE                                = 0,
     RG_SEAT_DEATHWING                           = 1,
     RG_SEAT_HIDING_PLACE                        = 2,
@@ -570,7 +573,7 @@ private:
                 }
                 break;
             case EVENT_RG_SHOT_DEATHWING:
-                Aim(Actor(NPC_RG_DEATHWING), SPELL_RG_CHANNEL_TO_DEATHWING);
+                Aim(Actor(NPC_RG_DEATHWING));
                 ChangeRiderSeat(player, RG_SEAT_DEATHWING);
                 break;
             case EVENT_RG_WHELP:
@@ -622,7 +625,7 @@ private:
                 FlyCurve(std::begin(RgCameraFlyOut), std::end(RgCameraFlyOut), 6.0f);
                 break;
             case EVENT_RG_SHOT_HIDING_PLACE:
-                Aim(Actor(NPC_RG_MIRROR_IMAGE), SPELL_RG_CHANNEL_TO_MIRROR_IMAGE);
+                Aim(Actor(NPC_RG_MIRROR_IMAGE));
                 ChangeRiderSeat(player, RG_SEAT_HIDING_PLACE);
                 break;
             case EVENT_RG_END:
@@ -684,11 +687,11 @@ private:
             deathwing->AI()->Talk(textId, player);
     }
 
-    // The seats' CameraModes 91 and 94 look at the camera's channel object (see the seat note above)
-    void Aim(Unit* target, uint32 spellId)
+    // The seats' CameraModes 91 and 94 look at the camera's channel object (see the seat note above); no channel spell, so that
+    // no beam is drawn from the eye to the subject
+    void Aim(Unit* target)
     {
         me->SetGuidValue(UNIT_FIELD_CHANNEL_OBJECT, target ? target->GetGUID() : ObjectGuid::Empty);
-        me->SetUInt32Value(UNIT_FIELD_CHANNEL_SPELL, target ? spellId : 0);
     }
 
     // Unit::ChangeSeat takes the passenger off and seats them again within the call: no early exit
@@ -817,7 +820,7 @@ private:
     // The actors and the scene object go, and the aim with them
     void Cleanup()
     {
-        Aim(nullptr, 0);
+        Aim(nullptr);
         for (auto const& actor : _actors)
             if (Creature* creature = ObjectAccessor::GetCreature(*me, actor.second))
                 creature->DespawnOrUnsummon();
