@@ -30,6 +30,12 @@
 #include "TemporarySummon.h"
 #include "SpellScript.h"
 #include "SpellAuraEffects.h"
+#include "ObjectMgr.h"
+#include "LootMgr.h"
+#include "Mail.h"
+#include "Item.h"
+#include "Pet.h"
+#include "DatabaseEnv.h"
 
 enum SearingGorgeDinwhisker
 {
@@ -267,9 +273,103 @@ enum SearingGorgeLunk
     ACTION_LUNK_DISMISS             = 2,
 
     EVENT_LUNK_CHECK                = 1,
+    EVENT_LUNK_TARGET_TIMEOUT,
+    EVENT_LUNK_RIDE_END,
+    EVENT_LUNK_SIT_CREDIT,
+    EVENT_LUNK_SIT_END,
+    EVENT_LUNK_RELEASE_TARGET,
+    EVENT_LUNK_RESUME,
 
     LUNK_SCOLD_COOLDOWN             = 20 * IN_MILLISECONDS,  // the summon auras' proc cooldown (SpellAuraOptions 20000)
+
+    // Spider Rider / Cranky Little Dwarfs
+    NPC_GLASSWEB_SPIDER             = 5856,
+    NPC_DARK_IRON_STEAMSMITH        = 5840,
+
+    SPELL_TUMMY_VENOM               = 88154,    // 30 s dummy aura (the green blob) + KILL_CREDIT 47279 to his summoner
+    SPELL_HOLDING_LOOT              = 88320,    // 30 s dummy aura + KILL_CREDIT 47381 to his summoner
+    SPELL_CRANKY_DWARFS_SUFFOCATING = 88305,    // hidden dummy aura on the dwarf ("server-side script")
+    SPELL_SLEEP_VISUAL_FLAVOR       = 34664,
+
+    QUEST_A_PROPER_ANTIVENOM        = 27958,
+    QUEST_RECON_ESSENTIALS          = 27977,
+    ITEM_GLASSWEB_VENOM             = 62809,
+    GLASSWEB_VENOM_NEEDED           = 14,       // quest_objective of 27958
+    ITEM_SMITHING_TUYERE            = 18959,
+
+    SAY_LUNK_RIDE                   = 0,        // 47281: BT 47405-47409 (yells)
+    SAY_LUNK_VENOM                  = 1,        // 47281: BT 47411-47416
+    SAY_LUNK_LAUGH                  = 3,        // 47281: BT 47410 "Ha ha ha!"
+    SAY_LUNK_STOLE                  = 0,        // 47333: BT 47525-47530
+    SAY_STEAMSMITH_SLEEP            = 0,        // 5840: BT 47498-47514
+
+    ANIMKIT_SWIM_LOOP               = 1505,     // AnimKit 1505: one full-body segment, anim 42 Swim, looping
+    POINT_LUNK_TARGET               = 1,
+    POINT_LUNK_RIDE                 = 2,
 };
+
+float const LUNK_RIDE_LIFT = 1.0f;     // yd above the spider's feet during the ride (ours; screenshot 202121: his body over it)
+
+// A spider or steamsmith Lunk has taken: it stops fighting everyone (its evade drops every fight and every aura others put on it,
+// so no DoT kills it), stands still, cannot be attacked and attacks nobody. Its own event lets it go after `releaseAfter` should
+// Lunk not (he was dismissed, his map unloaded): the safety and, for the dwarf, the end of his sleep.
+static void ReleaseLunkVictim(Creature* victim)
+{
+    if (!victim->IsInWorld() || !victim->IsAlive() || !victim->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_PC))
+        return;
+
+    // Unit flags and these auras are not reset by a respawn (Creature::setDeathState(JUST_RESPAWNED)): restore them first
+    victim->RemoveAurasDueToSpell(SPELL_SLEEP_VISUAL_FLAVOR);
+    victim->RemoveAurasDueToSpell(SPELL_CRANKY_DWARFS_SUFFOCATING);
+    victim->SetStandState(UNIT_STAND_STATE_STAND);
+    victim->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_PC | UNIT_FLAG_IMMUNE_TO_NPC);
+    victim->SetReactState(REACT_AGGRESSIVE);
+    victim->ClearUnitState(UNIT_STATE_EVADE);
+    victim->DespawnOrUnsummon(100);
+}
+
+static void NeutralizeLunkVictim(Creature* victim, uint32 releaseAfter)
+{
+    victim->SetHomePosition(victim->GetPositionX(), victim->GetPositionY(), victim->GetPositionZ(), victim->GetOrientation());
+    if (victim->IsAIEnabled)
+        victim->AI()->EnterEvadeMode(CreatureAI::EVADE_REASON_OTHER);
+    victim->CombatStop(true);
+    victim->SetReactState(REACT_PASSIVE);
+    victim->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_PC | UNIT_FLAG_IMMUNE_TO_NPC);
+    victim->RemoveAurasByType(SPELL_AURA_PERIODIC_DAMAGE);
+    victim->RemoveAurasByType(SPELL_AURA_PERIODIC_DAMAGE_PERCENT);
+    victim->RemoveAurasByType(SPELL_AURA_PERIODIC_LEECH);
+    victim->GetMotionMaster()->Clear();
+    victim->GetMotionMaster()->MoveIdle();
+    victim->StopMoving();
+    victim->m_Events.AddLambdaEventAtOffset([victim]() { ReleaseLunkVictim(victim); }, releaseAfter);
+}
+
+// Into the bags, or by mail when they are full (retail's Lunk froze with full bags, comments 2011-02-19 [+13], 2012-03-19 [+5]: ours)
+static void GiveOrMailItem(Player* player, uint32 itemId, uint32 count, uint32 senderEntry)
+{
+    if (!count)
+        return;
+
+    ItemPosCountVec dest;
+    if (player->CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, itemId, count) == EQUIP_ERR_OK)
+    {
+        if (Item* item = player->StoreNewItem(dest, itemId, true, Item::GenerateItemRandomPropertyId(itemId)))
+            player->SendNewItem(item, count, true, false);
+        return;
+    }
+
+    Item* item = Item::CreateItem(itemId, count, player);
+    if (!item)
+        return;
+
+    CharacterDatabaseTransaction trans = CharacterDatabase.BeginTransaction();
+    item->SaveToDB(trans);
+    MailDraft("Lunk", "Lunk keep this for you. Your bags too full.").AddItem(item)
+        .SendMailTo(trans, MailReceiver(player, player->GetGUID().GetCounter()), MailSender(MAIL_CREATURE, senderEntry));
+    CharacterDatabase.CommitTransaction(trans);
+    player->SendEquipError(EQUIP_ERR_INV_FULL, nullptr, nullptr, itemId);
+}
 
 struct LunkFollowerInfo
 {
@@ -418,6 +518,38 @@ struct npc_sg_lunk_follower : public ScriptedAI
         }
     }
 
+    void MovementInform(uint32 type, uint32 id) override
+    {
+        if (type != POINT_MOTION_TYPE)
+            return;
+
+        if (id == POINT_LUNK_TARGET && _state == LUNK_STATE_TO_TARGET)
+            OnReachTarget();
+        else if (id == POINT_LUNK_RIDE && _state == LUNK_STATE_RIDING)
+            EndRide();
+    }
+
+    // Spider Rider venom (sourced: comments 2010-12-23 [+43], 2010-11-29 [+8]: after a ride Lunk has a green blob on his tummy,
+    // click him with the gear cursor for 2 Glassweb Venom; players kept "exactly 14" from the rides before they took A Proper
+    // Antivenom, 27958 2011-03-23 [+12], 27959 2010-11-29 reply): given whenever A Proper Antivenom is not yet rewarded. Ours:
+    // clicking while mounted works too (retail lost the venom then, 2011-02-05), and never more than the 14 the quest needs.
+    void OnSpellClick(Unit* clicker, bool& result) override
+    {
+        Player* player = clicker->ToPlayer();
+        if (!player || player->GetGUID() != _ownerGUID || !me->HasAura(SPELL_TUMMY_VENOM) || !me->IsWithinDistInMap(player, 10.0f))
+            return;
+
+        me->RemoveFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_SPELLCLICK);
+        me->RemoveAurasDueToSpell(SPELL_TUMMY_VENOM);
+        if (!WantsVenom(player))
+            return;
+
+        uint32 have = player->GetItemCount(ITEM_GLASSWEB_VENOM);
+        uint32 count = have >= GLASSWEB_VENOM_NEEDED ? 0 : std::min<uint32>(2, GLASSWEB_VENOM_NEEDED - have);
+        GiveOrMailItem(player, ITEM_GLASSWEB_VENOM, count, me->GetEntry());
+        result = true;
+    }
+
     void UpdateAI(uint32 diff) override
     {
         _scoldCooldown = _scoldCooldown > diff ? _scoldCooldown - diff : 0;
@@ -425,25 +557,97 @@ struct npc_sg_lunk_follower : public ScriptedAI
 
         while (uint32 eventId = _events.ExecuteEvent())
         {
-            if (eventId == EVENT_LUNK_CHECK)
+            switch (eventId)
             {
-                _events.ScheduleEvent(EVENT_LUNK_CHECK, 500ms);
-                Check();
+                case EVENT_LUNK_CHECK:
+                    _events.ScheduleEvent(EVENT_LUNK_CHECK, 500ms);
+                    Check();
+                    break;
+                case EVENT_LUNK_TARGET_TIMEOUT:
+                    // Could not get there (a ledge, a pillar): he gets there anyway
+                    if (_state == LUNK_STATE_TO_TARGET)
+                        if (Creature* target = GetTarget())
+                        {
+                            me->NearTeleportTo(target->GetPositionX(), target->GetPositionY(), target->GetPositionZ(), target->GetOrientation());
+                            OnReachTarget();
+                        }
+                    break;
+                case EVENT_LUNK_RIDE_END:
+                    if (_state == LUNK_STATE_RIDING)
+                        EndRide();
+                    break;
+                case EVENT_LUNK_SIT_CREDIT:
+                    SitCredit();
+                    break;
+                case EVENT_LUNK_SIT_END:
+                    me->SetStandState(UNIT_STAND_STATE_STAND);
+                    _targetGUID.Clear();    // the dwarf sleeps on; his own event wakes him and sends him off
+                    Resume();
+                    break;
+                case EVENT_LUNK_RELEASE_TARGET:
+                    ReleaseTarget();
+                    break;
+                case EVENT_LUNK_RESUME:
+                    Resume();
+                    break;
+                default:
+                    break;
             }
         }
     }
 
 protected:
+    enum LunkState
+    {
+        LUNK_STATE_FOLLOW,
+        LUNK_STATE_TO_TARGET,
+        LUNK_STATE_RIDING,
+        LUNK_STATE_AFTER_RIDE,
+        LUNK_STATE_SITTING,
+    };
+
     Player* GetOwner() const
     {
         return ObjectAccessor::GetPlayer(*me, _ownerGUID);
+    }
+
+    // Each quest's Lunk has his own spot, so the Spider Rider and Cranky Little Dwarfs Lunks (several Lunks did follow at once,
+    // 2010-11-25 [+6]) and the dancing one do not stand in each other: behind-left, behind-right, straight behind (ours)
+    float GetFollowAngle() const
+    {
+        switch (me->GetEntry())
+        {
+            case NPC_LUNK_CRANKY_DWARFS:    return 2.0f * float(M_PI) - 2.0f;
+            case NPC_LUNK_RENDANS_WEAKNESS: return float(M_PI);
+            default:                        return 2.0f;
+        }
+    }
+
+    static bool WantsVenom(Player* player)
+    {
+        return !player->GetQuestRewardStatus(QUEST_A_PROPER_ANTIVENOM) && player->GetItemCount(ITEM_GLASSWEB_VENOM) < GLASSWEB_VENOM_NEEDED;
+    }
+
+    // Spider Rider: he rides while the quest is in the log, also after the 7th ride ("rode the 8th spider but had no venom",
+    // 27959 2011-04-01 [+4]); Cranky Little Dwarfs: until the 7th dwarf
+    bool WantsTarget(Player* owner) const
+    {
+        QuestStatus status = owner->GetQuestStatus(_info->Quest);
+        if (me->GetEntry() == NPC_LUNK_SPIDER_RIDER)
+            return status == QUEST_STATUS_INCOMPLETE || status == QUEST_STATUS_COMPLETE;
+        return me->GetEntry() == NPC_LUNK_CRANKY_DWARFS && status == QUEST_STATUS_INCOMPLETE;
+    }
+
+    Creature* GetTarget() const
+    {
+        return _targetGUID ? ObjectAccessor::GetCreature(*me, _targetGUID) : nullptr;
     }
 
     void FollowOwner(Unit* owner)
     {
         me->SetWalk(false);
         me->GetMotionMaster()->Clear();
-        me->GetMotionMaster()->MoveFollow(owner, 4.0f, 2.0f);
+        me->GetMotionMaster()->MoveFollow(owner, 4.0f, GetFollowAngle());
     }
 
     void Scold(bool always)
@@ -457,24 +661,83 @@ protected:
         }
     }
 
-    virtual void Dismiss()
+    void ReleaseTarget()
     {
+        if (Creature* target = GetTarget())
+            ReleaseLunkVictim(target);
+        _targetGUID.Clear();
+    }
+
+    void Dismiss()
+    {
+        ReleaseTarget();
         _events.Reset();
         me->DespawnOrUnsummon();
     }
 
-    // The owner holds the summon aura and is on this map: true. Gone or without the aura twice in a row: dismissed.
-    virtual bool Check()
+    // Off the spider: back on his feet on the ground
+    void Land()
+    {
+        if (!me->IsGravityDisabled())
+            return;
+
+        me->SetDisableGravity(false);
+        float x = me->GetPositionX(), y = me->GetPositionY(), z = me->GetPositionZ();
+        me->UpdateGroundPositionZ(x, y, z);
+        me->NearTeleportTo(x, y, z, me->GetOrientation());
+    }
+
+    void Resume()
+    {
+        Land();
+        me->SetAIAnimKitId(0);
+        me->SetMovementAnimKitId(0);
+        me->SetStandState(UNIT_STAND_STATE_STAND);
+        _state = LUNK_STATE_FOLLOW;
+        if (Player* owner = GetOwner())
+            FollowOwner(owner);
+    }
+
+    // Every 0.5 s. The owner holds the summon aura and is on this map, or Lunk goes (twice in a row: a teleport inside the map
+    // passes). Then: the venom click window, catching up, and the spider / dwarf to take.
+    void Check()
     {
         Player* owner = GetOwner();
         if (!owner || !owner->IsInWorld() || !_info || !owner->HasAura(_info->Spell))
         {
             if (++_ownerMissing >= 2)
                 Dismiss();
-            return false;
+            return;
         }
         _ownerMissing = 0;
-        return true;
+
+        if (me->HasFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_SPELLCLICK) && !me->HasAura(SPELL_TUMMY_VENOM))
+            me->RemoveFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_SPELLCLICK);
+
+        switch (_state)
+        {
+            case LUNK_STATE_FOLLOW:
+                CatchUp(owner);
+                if (WantsTarget(owner))
+                    if (Creature* target = FindWeakenedTarget(owner))
+                        Take(target, owner);
+                break;
+            case LUNK_STATE_TO_TARGET:
+            {
+                // Killed before he got on: no credit, and he is not pleased (sourced)
+                Creature* target = GetTarget();
+                if (!target || !target->IsAlive())
+                {
+                    _targetGUID.Clear();
+                    _events.CancelEvent(EVENT_LUNK_TARGET_TIMEOUT);
+                    Scold(true);
+                    Resume();
+                }
+                break;
+            }
+            default:
+                break;
+        }
     }
 
     // Left behind (the player rode on): brought along
@@ -488,8 +751,192 @@ protected:
         FollowOwner(owner);
     }
 
+    // "Knock the spider down to half health" / weaken the dwarf (sourced). Only the owner's own fight (R-9): his melee target,
+    // or one within 30 yd that is fighting him or his pet; alive, at half health or less, not already taken by another Lunk.
+    Creature* FindWeakenedTarget(Player* owner) const
+    {
+        uint32 entry = me->GetEntry() == NPC_LUNK_SPIDER_RIDER ? NPC_GLASSWEB_SPIDER : NPC_DARK_IRON_STEAMSMITH;
+        Pet* pet = owner->GetPet();
+
+        auto fits = [&](Creature* c)
+        {
+            return c && c->GetEntry() == entry && c->IsAlive() && c->IsInWorld() && c->GetHealthPct() <= 50.0f
+                && !c->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_PC) && owner->IsWithinDistInMap(c, 30.0f);
+        };
+
+        if (Unit* victim = owner->GetVictim())
+            if (fits(victim->ToCreature()))
+                return victim->ToCreature();
+
+        std::list<Creature*> candidates;
+        owner->GetCreatureListWithEntryInGrid(candidates, entry, 30.0f);
+        for (Creature* c : candidates)
+            if (fits(c) && (c->IsInCombatWith(owner) || (pet && c->IsInCombatWith(pet))))
+                return c;
+
+        return nullptr;
+    }
+
+    void Take(Creature* target, Player* owner)
+    {
+        bool spider = target->GetEntry() == NPC_GLASSWEB_SPIDER;
+        _targetGUID = target->GetGUID();
+        _state = LUNK_STATE_TO_TARGET;
+
+        // The spider is let go by Lunk 2 s after the ride; the dwarf sleeps about 30 s (ours). The offsets are the safety.
+        NeutralizeLunkVictim(target, spider ? 15 * IN_MILLISECONDS : 32 * IN_MILLISECONDS);
+
+        if (spider)
+            Talk(SAY_LUNK_RIDE, owner);     // "Look out spider! Here come Lunk!" ...
+
+        // "at break-neck speed" (2011-03-23 [+12], said of his arrival with the quest; his rush to the spider is ours)
+        me->SetWalk(false);
+        me->GetMotionMaster()->Clear();
+        me->GetMotionMaster()->MovePoint(POINT_LUNK_TARGET, target->GetPositionX(), target->GetPositionY(), target->GetPositionZ());
+        _events.ScheduleEvent(EVENT_LUNK_TARGET_TIMEOUT, 8s);
+    }
+
+    void OnReachTarget()
+    {
+        _events.CancelEvent(EVENT_LUNK_TARGET_TIMEOUT);
+        Creature* target = GetTarget();
+        if (!target || !target->IsAlive())
+            return;    // Check() scolds and resumes
+
+        if (target->GetEntry() == NPC_GLASSWEB_SPIDER)
+            StartRide(target);
+        else
+            StartSit(target);
+    }
+
+    // Spider Rider (screenshot 202121, 2010-12-20: Lunk belly-down on top of the spider, arms spread; comments: "rides it",
+    // "swimming"): Lunk lies on the spider in the swim pose while it walks about 9 yd (3-4 s), then gets off with the venom on his
+    // tummy and the credit. The pose (AnimKit 1505, swim, on the AI and movement kits), the walk and the 1 yd lift (gravity off,
+    // so he lies over the spider rather than on the ground) are ours: vehicle 584 has no seat to board.
+    void StartRide(Creature* spider)
+    {
+        _state = LUNK_STATE_RIDING;
+        me->SetFacingTo(spider->GetOrientation());
+        me->SetAIAnimKitId(ANIMKIT_SWIM_LOOP);
+        me->SetMovementAnimKitId(ANIMKIT_SWIM_LOOP);
+        if (Player* owner = GetOwner())
+            Talk(SAY_LUNK_LAUGH, owner);
+
+        Position dest = spider->GetNearPosition(9.0f, frand(-0.7f, 0.7f));
+        spider->SetWalk(true);
+        spider->GetMotionMaster()->MovePoint(1, dest);
+        me->SetDisableGravity(true);
+        me->NearTeleportTo(spider->GetPositionX(), spider->GetPositionY(), spider->GetPositionZ() + LUNK_RIDE_LIFT, spider->GetOrientation());
+        me->SetWalk(true);
+        me->GetMotionMaster()->Clear();
+        me->GetMotionMaster()->MovePoint(POINT_LUNK_RIDE, dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ() + LUNK_RIDE_LIFT, false);
+        _events.ScheduleEvent(EVENT_LUNK_RIDE_END, 5s);
+    }
+
+    void EndRide()
+    {
+        _state = LUNK_STATE_AFTER_RIDE;
+        _events.CancelEvent(EVENT_LUNK_RIDE_END);
+        me->StopMoving();
+        me->SetAIAnimKitId(0);
+        me->SetMovementAnimKitId(0);
+        Land();
+        if (Creature* spider = GetTarget())
+        {
+            spider->StopMoving();
+            spider->GetMotionMaster()->MoveIdle();
+        }
+
+        // 88154: the 30 s blob and the credit to his summoner (DBC). After the 7th ride: a ride without venom (sourced, above).
+        Player* owner = GetOwner();
+        if (owner && owner->GetQuestStatus(QUEST_LUNK_SPIDER_RIDER) == QUEST_STATUS_INCOMPLETE)
+        {
+            DoCast(me, SPELL_TUMMY_VENOM, true);
+            Talk(SAY_LUNK_VENOM, owner);
+            if (WantsVenom(owner))
+                me->SetFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_SPELLCLICK);
+        }
+
+        // "the spider despawns 2 s later" (mop's old SmartAI timing) and respawns as usual
+        _events.ScheduleEvent(EVENT_LUNK_RELEASE_TARGET, 2s);
+        _events.ScheduleEvent(EVENT_LUNK_RESUME, 2500ms);
+    }
+
+    // Cranky Little Dwarfs (screenshots 202129 / 267266: Lunk sitting, a small dwarf lying under him saying "This is... worse...
+    // than death..."; comments 2010-11-28 [+40], 2011-03-31 [+11]): Lunk sits on the dwarf, who falls asleep with one of his lines
+    // and 88305 Suffocating (DBC name, the quest's own spell); Lunk takes the credit and hands over the dwarf's things.
+    // Ours: the Zzz of 34664 for the look (88305 has no visual), the dwarf lying down, the timings, a 30 s sleep before he goes.
+    void StartSit(Creature* dwarf)
+    {
+        _state = LUNK_STATE_SITTING;
+        dwarf->SetStandState(UNIT_STAND_STATE_SLEEP);
+        dwarf->CastSpell(dwarf, SPELL_CRANKY_DWARFS_SUFFOCATING, true);
+        dwarf->CastSpell(dwarf, SPELL_SLEEP_VISUAL_FLAVOR, true);
+        // To Lunk's owner only (TextRange 5): nobody else sees Lunk sitting on him
+        if (dwarf->IsAIEnabled)
+            if (Player* owner = GetOwner())
+                dwarf->AI()->Talk(SAY_STEAMSMITH_SLEEP, owner);
+
+        me->StopMoving();
+        me->GetMotionMaster()->Clear();
+        me->GetMotionMaster()->MoveIdle();
+        me->SetFacingTo(dwarf->GetOrientation());
+        me->SetStandState(UNIT_STAND_STATE_SIT);
+        _events.ScheduleEvent(EVENT_LUNK_SIT_CREDIT, 2s);
+        _events.ScheduleEvent(EVENT_LUNK_SIT_END, 8s);
+    }
+
+    // "Here, I stealed this from little dwarf." and the dwarf's things: his pickpocket loot (the items the comments name are
+    // exactly pickpocketing_loot_template 5840) to the owner; Recon Essentials' Smithing Tuyere to the owner and, ours (R-9), to
+    // every group member within 30 yd who is on Recon Essentials without one. Ours: at least one pickpocket item (re-rolled up to
+    // ten times), since Lunk always says he hands something over.
+    void SitCredit()
+    {
+        Player* owner = GetOwner();
+        Creature* dwarf = GetTarget();
+        DoCast(me, SPELL_HOLDING_LOOT, true);    // 30 s aura + KILL_CREDIT 47381 to his summoner (DBC)
+        if (!owner)
+            return;
+
+        Talk(SAY_LUNK_STOLE, owner);
+
+        if (uint32 lootId = sObjectMgr->GetCreatureTemplate(NPC_DARK_IRON_STEAMSMITH)->pickpocketLootId)
+        {
+            std::vector<std::pair<uint32, uint32>> items;
+            for (uint8 tries = 0; tries < 10 && items.empty(); ++tries)
+            {
+                Loot loot;
+                loot.FillLoot(nullptr, lootId, LootTemplates_Pickpocketing, owner, true, true);
+                uint32 slots = loot.GetMaxSlotInLootFor(owner);
+                for (uint32 i = 0; i < slots; ++i)
+                    if (LootItem* item = loot.LootItemInSlot(i, owner))
+                        items.emplace_back(item->itemid, item->count);
+            }
+            for (auto const& item : items)
+                GiveOrMailItem(owner, item.first, item.second, me->GetEntry());
+        }
+
+        WorldObject const* spot = dwarf ? static_cast<WorldObject const*>(dwarf) : me;
+        auto giveTuyere = [&](Player* player)
+        {
+            if (player && player->IsInWorld() && player->IsAlive() && player->IsInMap(spot) && player->IsWithinDistInMap(spot, 30.0f)
+                && player->GetQuestStatus(QUEST_RECON_ESSENTIALS) == QUEST_STATUS_INCOMPLETE && !player->HasItemCount(ITEM_SMITHING_TUYERE, 1, true))
+                GiveOrMailItem(player, ITEM_SMITHING_TUYERE, 1, me->GetEntry());
+        };
+
+        if (Group* group = owner->GetGroup())
+        {
+            for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+                giveTuyere(ref->GetSource());
+        }
+        else
+            giveTuyere(owner);
+    }
+
     LunkFollowerInfo const* _info = nullptr;
     ObjectGuid _ownerGUID;
+    ObjectGuid _targetGUID;
+    LunkState _state = LUNK_STATE_FOLLOW;
     EventMap _events;
     uint32 _scoldCooldown = 0;
     uint8 _ownerMissing = 0;
