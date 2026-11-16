@@ -2470,10 +2470,21 @@ bool WorldObject::CanDetect(WorldObject const* obj, bool implicitDetect, bool ch
 
 bool WorldObject::CanDetectInvisibilityOf(WorldObject const* obj) const
 {
-    // Invisibility can only be detected by units
-    if (obj->ToUnit())
-        if ((m_invisibility.GetFlags() & obj->m_invisibilityDetect.GetFlags()) != m_invisibility.GetFlags())
+    // Invisibility can only be detected by units: an invisible seer sees only units that detect it. A creature a player controls
+    // (his pet, guardian, totem, charmed creature or vehicle) has no detection of its own; it counts as detecting what that player
+    // detects, as it already sees by that player's detection (CanDetect). Without this, a quest-invisible mob could not see or
+    // fight the pet of a player who sees it, and evaded whenever the pet alone attacked it. Only this direction is widened: what
+    // the minion itself sees, and whether its own invisibility or stealth is seen, are unchanged
+    if (Unit const* objUnit = obj->ToUnit())
+    {
+        uint32 undetected = m_invisibility.GetFlags() & ~obj->m_invisibilityDetect.GetFlags();
+        if (undetected && objUnit->GetTypeId() == TYPEID_UNIT)
+            if (Player const* controller = objUnit->GetCharmerOrOwnerPlayerOrPlayerItself())
+                undetected &= ~controller->m_invisibilityDetect.GetFlags();
+
+        if (undetected)
             return false;
+    }
 
     uint32 mask = obj->m_invisibility.GetFlags() & m_invisibilityDetect.GetFlags();
 
