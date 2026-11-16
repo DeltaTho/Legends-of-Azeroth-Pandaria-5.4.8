@@ -25,9 +25,10 @@
 // - Taking any one training quest brings all three at once; a hunter's or warlock's own pet is dismissed. Taken in combat, they
 //   come when the fight is over.
 // - A pet bar: Attack and Follow, and two buttons per training quest taken (all six once the three are taken), at buttons 3-4,
-//   6-7 and 9-10. Each button use ticks that ability's objective; the abilities need a hostile target selected and do nothing
-//   while the player is mounted. Eric / Amakkar charges and stuns or hands out potions; Baelog / Jurrix shoots the player's target
-//   or speeds the three's attacks; Olaf / Gargal raises his shield or taunts the player's target onto himself.
+//   6-7 and 9-10. Each button use ticks that ability's objective; the two aimed at the player's target (Charge / Kidney Shot,
+//   Valhalla Shot / Fiery Blast) need a hostile target selected, and none works while the player is mounted. Eric / Amakkar
+//   charges and stuns or hands out potions; Baelog / Jurrix shoots the player's target or speeds the three's attacks; Olaf /
+//   Gargal raises his shield or taunts the player's target onto himself, or the enemies around him without one.
 // - All three follow, fight what the player fights and whatever hostile comes within 40 yd of them, and obey Passive / Defensive
 //   (/petpassive, /petdefensive) and Follow / Attack given to the leader.
 // - A viking helmet on the player while the dwarves are out (Viking Helmet 87391; the Horde twin Ex-KEF: Active Aura 87592).
@@ -731,9 +732,29 @@ static bool GetCompanionCastContext(Unit* caster, uint32 spellId, CompanionCastC
     return ctx.Owner != nullptr;
 }
 
-// Usable while the player holds the ability's quest (or has handed it in), is not mounted (720258 2010-12-08 [+6]; the refusal is
-// ours) and has a hostile target selected (Adelorna 2010-12-01 [+30]: "you have to tag the mob ... before the abilities become
-// active"); the companion who carries it out must be there. Valhalla Shot / Fiery Blast reach 100 yd, Mighty Shout 40 yd (ours).
+// The two abilities aimed at the player's target: Charge / Kidney Shot (87278 / 87608, all effects TARGET_UNIT_TARGET_ENEMY) and
+// Valhalla Shot / Fiery Blast (87281 / 87612, whose shot 87276 / 87593 is TARGET_UNIT_TARGET_ENEMY; C6 "the enemy you have
+// selected"). The other four act on the companions (Pocket Potion 87279 / 87609, Warcry / Time Warp 87277 / 87596: area entries
+// around the caster; Shield Wall 87275 / 87607: the caster) or around the tank (Mighty Shout 87274 / 87606: TARGET_UNIT_SRC_AREA_ENEMY).
+static bool CompanionAbilityNeedsTarget(uint32 spellId)
+{
+    switch (spellId)
+    {
+        case SPELL_ERIC_CHARGE:
+        case SPELL_AMAKKAR_KIDNEY_SHOT:
+        case SPELL_BAELOG_VALHALLA_SHOT:
+        case SPELL_JURRIX_FIERY_BLAST:
+            return true;
+        default:
+            return false;
+    }
+}
+
+// Usable while the player holds the ability's quest (or has handed it in) and is not mounted (720258 2010-12-08 [+6]; the
+// refusal is ours); the companion who carries it out must be there. Charge / Kidney Shot and Valhalla Shot / Fiery Blast need a
+// hostile target selected (Adelorna 2010-12-01 [+30]: "you have to tag the mob ... before the abilities become active"), the
+// shot within 100 yd of the shooter. Mighty Shout taunts a selected hostile target only within 40 yd of the tank (ours), else
+// the enemies around him (the spell's own area, FilterShoutTargets).
 static SpellCastResult CheckCompanionAbility(Unit* caster, uint32 spellId)
 {
     CompanionCastContext ctx;
@@ -747,7 +768,10 @@ static SpellCastResult CheckCompanionAbility(Unit* caster, uint32 spellId)
         return SPELL_FAILED_DONT_REPORT;
 
     Unit* target = ctx.Owner->GetSelectedUnit();
-    if (!target || !target->IsAlive() || !ctx.Owner->IsValidAttackTarget(target))
+    if (target && (!target->IsAlive() || !ctx.Owner->IsValidAttackTarget(target)))
+        target = nullptr;
+
+    if (!target && CompanionAbilityNeedsTarget(spellId))
         return SPELL_FAILED_BAD_TARGETS;
 
     if (ctx.Role != ROLE_LEADER)
@@ -758,12 +782,12 @@ static SpellCastResult CheckCompanionAbility(Unit* caster, uint32 spellId)
 
         if (spellId == SPELL_BAELOG_VALHALLA_SHOT || spellId == SPELL_JURRIX_FIERY_BLAST)
         {
-            if (!helper->IsWithinDistInMap(target, CompanionShotRange))
+            if (!target || !helper->IsWithinDistInMap(target, CompanionShotRange))
                 return SPELL_FAILED_OUT_OF_RANGE;
         }
         else if (spellId == SPELL_OLAF_MIGHTY_SHOUT || spellId == SPELL_GARGAL_MIGHTY_SHOUT)
         {
-            if (!helper->IsWithinDistInMap(target, CompanionAssistRange))
+            if (target && !helper->IsWithinDistInMap(target, CompanionAssistRange))
                 return SPELL_FAILED_OUT_OF_RANGE;
         }
     }
@@ -838,7 +862,8 @@ class spell_badlands_companion_potion : public SpellScript
 // 87282 / 87613 Shield Wall, 87283 / 87614 Mighty Shout (dummies): the leader's order, carried out by the right companion of this
 // player (the effect's area entry target, set here): the shot at the player's selected target (C6, 808808 "click on the
 // flameblade, not the npc"), the attack speed buff on the three (87277 / 87596), the shield on himself (87275 / 87607), the taunt
-// of the player's target onto himself (87274 / 87606). Credits 46864-46867 (Horde: Fiery Blast 46865, Time Warp 46864).
+// onto himself (87274 / 87606) of the player's target, or without one of the enemies within 15 yd of him. Credits 46864-46867
+// (Horde: Fiery Blast 46865, Time Warp 46864).
 class spell_badlands_companion_order : public SpellScript
 {
     PrepareSpellScript(spell_badlands_companion_order);
