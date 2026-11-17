@@ -337,6 +337,7 @@ void AddSC_badlands_titans();
 void AddSC_badlands_stories();
 void AddSC_blasted_lands();
 void AddSC_burning_steppes();
+void AddSC_burning_steppes_followers();
 void AddSC_duskwood();
 void AddSC_eastern_plaguelands();
 void AddSC_badlands_fuselight();
@@ -1397,6 +1398,7 @@ void AddEasternKingdomsScripts()
     AddSC_badlands_stories();
     AddSC_blasted_lands();
     AddSC_burning_steppes();
+    AddSC_burning_steppes_followers();
     AddSC_duskwood();
     AddSC_eastern_plaguelands();
     AddSC_badlands_fuselight();

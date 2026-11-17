@@ -210,6 +210,7 @@ set(scripts_STAT_SRCS
   EasternKingdoms/ShadowfangKeep/boss_lord_godfrey.cpp
   EasternKingdoms/ShadowfangKeep/boss_lord_valden.cpp
   EasternKingdoms/zone_burning_steppes.cpp
+  EasternKingdoms/zone_burning_steppes_followers.cpp
   EasternKingdoms/zone_blasted_lands.cpp
   EasternKingdoms/zone_stormwind_city.cpp
   EasternKingdoms/zone_tol_barad.cpp
