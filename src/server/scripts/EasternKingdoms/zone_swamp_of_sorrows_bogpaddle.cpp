@@ -18,7 +18,7 @@
 /* ScriptData
 SDName: Swamp of Sorrows, Bogpaddle
 SDComment: The Baron's Cannons (27600 In With a Bang, 27740 Baba Bogbrew, the frigate's Landward Cannon), the Silversnap Swim
-           Tonic (27587 Maliciously Delicious)
+           Tonic (27587 Maliciously Delicious), the Stray Land Mines (27536 Mostly Harmless)
 SDCategory: Swamp of Sorrows
 EndScriptData */
 
@@ -542,8 +542,148 @@ class spell_bogpaddle_silversnap_swim_tonic : public AuraScript
     }
 };
 
+/*######
+## Stray Land Mines (205545, Mostly Harmless 27536)
+## What the player sees (sources: the wiki note of 27536 "Do not carelessly run over the landmines! They will explode. Carefully
+## walk up to them and right-click as soon as the cog lights up."; comments 2012-08-16 [+4], 2010-12-24 reply [+2], 2012-03-19
+## [+4], 2011-01-23 [+2], 2011-07-07 [+2], 2011-09-23 [+2]; the trap 205547 "Stray Land Mine (Armed)" -> 85452 Summon Explosion
+## Bunny 45842 -> 85445 Detonation): a player who runs onto a mine sets it off: knockback and about 170 fire damage to him and the
+## players beside him, and the mine is gone until it respawns. One who stops as the cursor turns into the cog and loots it from
+## there is safe.
+## No 205547 was ever spawned (mop and both TDBs) and this core fires an environmental trap only from a spawned one, so one is
+## spawned at each mine. The chest's linked trap (data7) is cleared: the core fires a linked trap on every opening, which would
+## blow up the careful looter too.
+## The margin, from the code: the mine is looted with "Opening" (6478, 5 yd); its model has an empty bounding box, so the client
+## (CGGameObject_C_TypeBase::CheckRange) and the server (GameObject::IsAtInteractDistance) both allow it from inside a 10 x 10 yd
+## box around it, turned with the mine; the cog lights up at its edge, 5 yd in front of the mine (up to 7 yd at its corners). The
+## trap measures the exact distance to the player. With the template's 5 yd a player coming straight at a mine would stand on the
+## trap's edge the moment the cog lights up; TrinityCore reads that field as a diameter (radius 2.5, the Cataclysm core in
+## E:\WoW Cores\CataclysmPreservationProject halves it), this core as a radius. The trap is 3 yd here (ours: the integer nearest
+## the 2.5 yd radius), so the band from 3 to 5 yd is safe all round and running over a mine is not.
+## Ours: the trap spawns (gameobject 3136000-3136018, on the mines, server-side only, 120 s like the mines), the one-shot trap type,
+## the 3 yd, the explosion bunny's script: it explodes only beside a mine that is there, takes the mine away for its respawn time,
+## and the explosion hits players and what they control (pets: a 2014 comment says pets set them off; here they are only hit),
+## nothing else, and uses no object (85445's ACTIVATE_OBJECT would "use" the mines and traps around it). A mine looted carefully
+## takes its trap with it (both come back together when the mines respawn in 120 s: sos-ac's 2026_11_23_01; at the old 300 s a
+## trap is back before its mine and does nothing).
+## Not as the sources: auto-loot from the edge set a mine off every time (2012-03-19 [+4], 2025-05-22 [+1]): here only distance
+## counts; pets set mines off (2014-03-19 [+3]): here only players. The 3-5 yd band is read from the code, not tried in game.
+######*/
+
+enum BogpaddleLandMines
+{
+    GO_STRAY_LAND_MINE                  = 205545,
+    GO_STRAY_LAND_MINE_ARMED            = 205547,   // the trap: 85452 summons 45842 at it
+    SPELL_LAND_MINE_DETONATION          = 85445,    // knockback, 174 fire, activate object; 7 yd
+};
+
+// 205545 Stray Land Mine: looted (or blown up), it takes its trap away for the same respawn time
+struct go_bogpaddle_stray_land_mine : public GameObjectAI
+{
+    go_bogpaddle_stray_land_mine(GameObject* go) : GameObjectAI(go) { }
+
+    void OnStateChanged(uint32 state, Unit* /*unit*/) override
+    {
+        if (state != GO_JUST_DEACTIVATED)
+            return;
+
+        std::list<GameObject*> traps;
+        me->GetGameObjectListWithEntryInGrid(traps, GO_STRAY_LAND_MINE_ARMED, 1.5f);
+        for (GameObject* trap : traps)
+            if (trap->isSpawned() && trap->getLootState() != GO_JUST_DEACTIVATED)
+                trap->SetLootState(GO_JUST_DEACTIVATED);
+    }
+};
+
+// 45842 Stray Land Mine Explosion Bunny, summoned by the trap (as a guardian of the trap's spell trigger, which lasts 100 ms):
+// explodes at once beside a mine that is there, and takes the mine away for its respawn time
+struct npc_bogpaddle_land_mine_explosion_bunny : public ScriptedAI
+{
+    npc_bogpaddle_land_mine_explosion_bunny(Creature* creature) : ScriptedAI(creature) { }
+
+    void InitializeAI() override
+    {
+        me->SetReactState(REACT_PASSIVE);
+    }
+
+    void IsSummonedBy(Unit* /*summoner*/) override
+    {
+        Detonate();
+    }
+
+    // A static spawn (two stood on mines; the spawn section deletes them, plan K14) never explodes
+    void UpdateAI(uint32 /*diff*/) override
+    {
+        if (me->IsSummon())
+            Detonate();
+    }
+
+    void Detonate()
+    {
+        if (_done)
+            return;
+        _done = true;
+
+        GameObject* mine = nullptr;
+        std::list<GameObject*> mines;
+        me->GetGameObjectListWithEntryInGrid(mines, GO_STRAY_LAND_MINE, 3.0f);
+        for (GameObject* go : mines)
+            if (go->isSpawned() && go->getLootState() != GO_JUST_DEACTIVATED && (!mine || me->GetExactDist(go) < me->GetExactDist(mine)))
+                mine = go;
+
+        if (!mine)
+        {
+            me->DespawnOrUnsummon();
+            return;
+        }
+
+        DoCast(me, SPELL_LAND_MINE_DETONATION, true);
+        mine->SetLootState(GO_JUST_DEACTIVATED);
+        me->DespawnOrUnsummon(1000);
+    }
+
+private:
+    bool _done = false;
+};
+
+// 85445 Detonation: players and what they control only; no object is used
+class spell_bogpaddle_land_mine_detonation : public SpellScript
+{
+    PrepareSpellScript(spell_bogpaddle_land_mine_detonation);
+
+    void FilterUnits(std::list<WorldObject*>& targets)
+    {
+        targets.remove_if([](WorldObject* object)
+        {
+            Unit* unit = object->ToUnit();
+            return !unit || !unit->IsControlledByPlayer();
+        });
+    }
+
+    void FilterObjects(std::list<WorldObject*>& targets)
+    {
+        targets.clear();
+    }
+
+    void PreventActivate(SpellEffIndex effIndex)
+    {
+        PreventHitDefaultEffect(effIndex);
+    }
+
+    void Register() override
+    {
+        OnObjectAreaTargetSelect += SpellObjectAreaTargetSelectFn(spell_bogpaddle_land_mine_detonation::FilterUnits, EFFECT_0, TARGET_UNIT_DEST_AREA_ENTRY);
+        OnObjectAreaTargetSelect += SpellObjectAreaTargetSelectFn(spell_bogpaddle_land_mine_detonation::FilterUnits, EFFECT_1, TARGET_UNIT_DEST_AREA_ENTRY);
+        OnObjectAreaTargetSelect += SpellObjectAreaTargetSelectFn(spell_bogpaddle_land_mine_detonation::FilterObjects, EFFECT_2, TARGET_GAMEOBJECT_DEST_AREA);
+        OnEffectHitTarget += SpellEffectFn(spell_bogpaddle_land_mine_detonation::PreventActivate, EFFECT_2, SPELL_EFFECT_ACTIVATE_OBJECT);
+    }
+};
+
 void AddSC_swamp_of_sorrows_bogpaddle()
 {
+    RegisterGameObjectAI(go_bogpaddle_stray_land_mine);
+    RegisterCreatureAI(npc_bogpaddle_land_mine_explosion_bunny);
+    new spell_script<spell_bogpaddle_land_mine_detonation>("spell_bogpaddle_land_mine_detonation");
     new aura_script<spell_bogpaddle_silversnap_swim_tonic>("spell_bogpaddle_silversnap_swim_tonic");
     RegisterCreatureAI(npc_bogpaddle_barons_cannon);
     RegisterCreatureAI(npc_bogpaddle_cannon_kid);
