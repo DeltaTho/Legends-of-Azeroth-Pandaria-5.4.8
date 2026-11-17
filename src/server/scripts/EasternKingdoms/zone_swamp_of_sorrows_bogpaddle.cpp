@@ -17,7 +17,8 @@
 
 /* ScriptData
 SDName: Swamp of Sorrows, Bogpaddle
-SDComment: The Baron's Cannons (27600 In With a Bang, 27740 Baba Bogbrew, the frigate's Landward Cannon)
+SDComment: The Baron's Cannons (27600 In With a Bang, 27740 Baba Bogbrew, the frigate's Landward Cannon), the Silversnap Swim
+           Tonic (27587 Maliciously Delicious)
 SDCategory: Swamp of Sorrows
 EndScriptData */
 
@@ -34,6 +35,8 @@ EndScriptData */
 #include "MovementTypedefs.h"
 #include "Map.h"
 #include "MapManager.h"
+#include "SpellScript.h"
+#include "SpellAuraEffects.h"
 #include <cmath>
 #include <mutex>
 #include <unordered_map>
@@ -457,8 +460,91 @@ public:
     }
 };
 
+/*######
+## Silversnap Swim Tonic (item 62795, Maliciously Delicious 27587)
+## What the player sees (sources: 27587 comments 2010-12-01 [+8], 2010-11-27 [+5], 2011-03-23 [+7], 2010-12-06 [+3],
+## 2011-02-06 [+2]; the wiki 27600 note "for an easier swim back"; spells 88026, 88416, 88008): for 15 minutes in the Swamp of
+## Sorrows he breathes under water and walks on the sea floor 60 % faster (also mounted); crossing into Redridge or entering the
+## Sunken Temple ends it (the spells' AreaGroup 2801 = zone 8).
+## The item's spell 88026 is a bare marker aura; the effects are 88416 (run speed +60 %, water breathing, linked 88008: swim speed,
+## underwater walking 315, the walking animation set), which nothing applies. The core removes 88416 on every move out of the
+## water (its AuraInterruptFlags NOT_UNDERWATER: Unit::ProcessTerrainStatusUpdate on each relocation whose liquid status is
+## neither in nor under water) and nothing puts it back, so it is meant to be on him only in the water and has to come back each
+## time he goes in again: a spell_area row on aura 88026 would give it once, on the drink (Aura::HandleAuraSpecificMods), and a
+## second drink only refreshes 88026. Here the marker checks every second: swimming or under water he gets 88416; wading in
+## shallow water (less than 0.6 of his height, where the client would not start swimming without it) he loses it, so the +60 %
+## is not given in the swamp's shallows; between the two it stays as it is (no flicker at the edge of the deep water); out of the
+## water the core takes it. 88416's linked 88008 (the sea-floor walk) lasts 15 min while 88416 has no end: after an early
+## second drink 88008 runs out first, so 88416 is cast again whenever 88008 is missing. The client walks him on the bottom from
+## aura 315 by itself (CGUnit_C aura-added handler sets the client flag 0x80000000, and UpdateSwimmingStatus then uses the
+## "flight style": 5.0.4 decomp Unit_C.cpp 3386, 20929), so the server needs no handler.
+## Ours: the one-second check and its depth rule (the map's liquid level against his position, one liquid query a second; the
+## swim flag from his own movement); no speed bonus on land or in shallows (user question 14).
+######*/
+
+enum SilversnapSwimTonic
+{
+    SPELL_SILVERSNAP_SWIM_TONIC_MARKER  = 88026,    // the item's spell: dummy, 15 min, zone 8
+    SPELL_SILVERSNAP_SWIM_TONIC         = 88416,    // speed, breathing, linked 88008 (underwater walking); zone 8
+    SPELL_SILVERSNAP_SWIM_TONIC_WALK    = 88008,    // swim speed, underwater walking 315, walking anims; 15 min
+};
+
+class spell_bogpaddle_silversnap_swim_tonic : public AuraScript
+{
+    PrepareAuraScript(spell_bogpaddle_silversnap_swim_tonic);
+
+    void CalcPeriodic(AuraEffect const* /*aurEff*/, bool& isPeriodic, int32& amplitude)
+    {
+        isPeriodic = true;
+        amplitude = 1 * IN_MILLISECONDS;
+    }
+
+    void OnPeriodic(AuraEffect const* /*aurEff*/)
+    {
+        PreventDefaultAction();
+
+        Unit* target = GetTarget();
+        if (!target->IsInWorld())
+            return;
+
+        bool hasTonic = target->HasAura(SPELL_SILVERSNAP_SWIM_TONIC);
+        // 88008 (15 min) ran out under a 88416 that has no end (an early second tonic): start both again
+        if (hasTonic && !target->HasAura(SPELL_SILVERSNAP_SWIM_TONIC_WALK))
+        {
+            target->RemoveAurasDueToSpell(SPELL_SILVERSNAP_SWIM_TONIC);
+            hasTonic = false;
+        }
+
+        LiquidData liquid;
+        ZLiquidStatus const status = target->GetMap()->GetLiquidStatus(target->GetPhaseMask(), target->GetPositionX(),
+            target->GetPositionY(), target->GetPositionZ(), MAP_ALL_LIQUIDS, &liquid, target->GetCollisionHeight());
+        bool const inLiquid = (status & (LIQUID_MAP_IN_WATER | LIQUID_MAP_UNDER_WATER)) != 0;
+        bool const swimming = target->HasUnitMovementFlag(MOVEMENTFLAG_SWIMMING);
+        bool const deep = inLiquid && (swimming || (status & LIQUID_MAP_UNDER_WATER));
+        bool const shallow = !inLiquid || (!swimming && liquid.level - target->GetPositionZ() < 0.6f * target->GetCollisionHeight());
+
+        if (!hasTonic && deep && target->IsAlive() && !target->IsInFlight())
+            target->CastSpell(target, SPELL_SILVERSNAP_SWIM_TONIC, true);
+        else if (hasTonic && shallow)
+            target->RemoveAurasDueToSpell(SPELL_SILVERSNAP_SWIM_TONIC);
+    }
+
+    void AfterRemove(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
+    {
+        GetTarget()->RemoveAurasDueToSpell(SPELL_SILVERSNAP_SWIM_TONIC);
+    }
+
+    void Register() override
+    {
+        DoEffectCalcPeriodic += AuraEffectCalcPeriodicFn(spell_bogpaddle_silversnap_swim_tonic::CalcPeriodic, EFFECT_0, SPELL_AURA_DUMMY);
+        OnEffectPeriodic += AuraEffectPeriodicFn(spell_bogpaddle_silversnap_swim_tonic::OnPeriodic, EFFECT_0, SPELL_AURA_DUMMY);
+        AfterEffectRemove += AuraEffectRemoveFn(spell_bogpaddle_silversnap_swim_tonic::AfterRemove, EFFECT_0, SPELL_AURA_DUMMY, AURA_EFFECT_HANDLE_REAL);
+    }
+};
+
 void AddSC_swamp_of_sorrows_bogpaddle()
 {
+    new aura_script<spell_bogpaddle_silversnap_swim_tonic>("spell_bogpaddle_silversnap_swim_tonic");
     RegisterCreatureAI(npc_bogpaddle_barons_cannon);
     RegisterCreatureAI(npc_bogpaddle_cannon_kid);
     RegisterGameObjectAI(go_bogpaddle_landward_cannon);
