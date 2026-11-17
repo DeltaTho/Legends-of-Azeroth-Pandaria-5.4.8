@@ -43,8 +43,8 @@ enum ScrappedGolemsType
     SPELL_CREATE_WAR_REAVER_PARTS_BC = 89418, // Piston & Gearshaft
     SPELL_UPPERCUTE                  = 10966,
     SPELL_FLAME_BLAST                = 84165,
-    SPELL_BATTLE_READY               = 89353, // first defeat
-    SPELL_WELL_HONED                 = 89352, // second defeat
+    SPELL_BATTLE_READY               = 89353, // second defeat: Flame Blast 91313 needs it
+    SPELL_WELL_HONED                 = 89352, // first defeat: Heave 91314 needs it
     SPELL_PERFECTLY_TUNNED           = 89355, // credit after this
     SPELL_HEAVE                      = 91314,
     SPELL_FLAME_BLAST_TRAIN          = 91313,
@@ -63,6 +63,7 @@ enum ScrappedGolemsType
     GO_PART_BC                       = 206974,
 
     QUEST_GOLEM_TRAINING             = 28227,
+    QUEST_SCRAPPED_GOLEMS            = 28226,
 
     ACTION_GOLEM_TRAINING = 0,
 
@@ -101,14 +102,13 @@ struct npc_burning_steppes_war_reaver : public customCreatureAI
     void JustEngagedWith(Unit* /*who*/) override
     {
         events.ScheduleEvent(EVENT_UPPERCUTE, 5.5 * IN_MILLISECONDS);
-        events.ScheduleEvent(SPELL_FLAME_BLAST, 8 * IN_MILLISECONDS);
+        events.ScheduleEvent(EVENT_FLAME_BLAST, 8 * IN_MILLISECONDS);
     }
 
+    // Scrapped Golems 28226: every kill leaves parts (2010-11-24 reply [+16] "with every kill", 2010-12-01, 2013; one 2012 reply
+    // "not always now": the less grindy reading). Was 80 %.
     void JustDied(Unit* /*killer*/) override
     {
-        if (!roll_chance_i(80))
-            return;
-
         DoCast(me, Trinity::Containers::SelectRandomContainerElement(reaverSpellParts));
     }
 
@@ -139,10 +139,15 @@ class go_burning_steppes_war_reaver_part : public GameObjectScript
     public:
         go_burning_steppes_war_reaver_part() : GameObjectScript("go_burning_steppes_war_reaver_part") { }
 
+        // The salvage options only for a player on Scrapped Golems (the object's data10 PlayerCondition 11083, which the core does
+        // not read for type 2); others see the text alone.
         bool OnGossipHello(Player* player, GameObject* go) override
         {
-            player->ADD_GOSSIP_ITEM_DB(player->GetDefaultGossipMenuForSource(go), 0, GOSSIP_SENDER_MAIN, GOSSIP_ACTION_INFO_DEF + 1);
-            player->ADD_GOSSIP_ITEM_DB(player->GetDefaultGossipMenuForSource(go), 1, GOSSIP_SENDER_MAIN, GOSSIP_ACTION_INFO_DEF + 2);
+            if (player->GetQuestStatus(QUEST_SCRAPPED_GOLEMS) == QUEST_STATUS_INCOMPLETE)
+            {
+                player->ADD_GOSSIP_ITEM_DB(player->GetDefaultGossipMenuForSource(go), 0, GOSSIP_SENDER_MAIN, GOSSIP_ACTION_INFO_DEF + 1);
+                player->ADD_GOSSIP_ITEM_DB(player->GetDefaultGossipMenuForSource(go), 1, GOSSIP_SENDER_MAIN, GOSSIP_ACTION_INFO_DEF + 2);
+            }
 
             player->SEND_GOSSIP_MENU(player->GetGossipTextId(go), go->GetGUID());
 
@@ -153,12 +158,14 @@ class go_burning_steppes_war_reaver_part : public GameObjectScript
         {
             player->PlayerTalkClass->ClearMenus();
 
-            // Send item to player
+            // Send item to player; with full bags the part stays for another try
             auto itr = golemParts.find(go->GetEntry());
-            player->AddItem(action == GOSSIP_ACTION_INFO_DEF + 1 ? itr->second[0] : itr->second[1], 1);
+            bool stored = itr != golemParts.end() && (action == GOSSIP_ACTION_INFO_DEF + 1 || action == GOSSIP_ACTION_INFO_DEF + 2)
+                && player->AddItem(action == GOSSIP_ACTION_INFO_DEF + 1 ? itr->second[0] : itr->second[1], 1);
 
             player->CLOSE_GOSSIP_MENU();
-            go->Delete();
+            if (stored)
+                go->Delete();
 
             return true;
         }
@@ -238,11 +245,11 @@ class npc_burning_steppes_chiseled_golem : public CreatureScript
                     damage = 0;
                     hasDefeat = true;
 
-                    // select powerful depend of current
-                    if (!me->HasAura(SPELL_BATTLE_READY))
+                    // Golem Training 28227: defeat 1 learns Heave, defeat 2 Flame Blast (wiki; 2010-11-26 [+23]); was the other way round
+                    if (!me->HasAura(SPELL_WELL_HONED))
                     {
                         me->PrepareChanneledCast(me->GetOrientation());
-                        DoCast(me, SPELL_BATTLE_READY);
+                        DoCast(me, SPELL_WELL_HONED);
                         Talk(TALK_DEFEAT_1);
 
                         scheduler
@@ -255,13 +262,13 @@ class npc_burning_steppes_chiseled_golem : public CreatureScript
                             if (Player* target = ObjectAccessor::GetPlayer(*me, targetGUID))
                                 me->RemoveChanneledCast(target->GetGUID());
 
-                            events.ScheduleEvent(EVENT_FLAME_BLAST, 2 * IN_MILLISECONDS);
+                            events.ScheduleEvent(EVENT_UPPERCUTE, 2 * IN_MILLISECONDS);
                         });
                     }
-                    else if (!me->HasAura(SPELL_WELL_HONED))
+                    else if (!me->HasAura(SPELL_BATTLE_READY))
                     {
                         me->PrepareChanneledCast(me->GetOrientation());
-                        DoCast(me, SPELL_WELL_HONED);
+                        DoCast(me, SPELL_BATTLE_READY);
                         Talk(TALK_DEFEAT_2);
 
                         scheduler
@@ -274,7 +281,7 @@ class npc_burning_steppes_chiseled_golem : public CreatureScript
                             if (Player* target = ObjectAccessor::GetPlayer(*me, targetGUID))
                                 me->RemoveChanneledCast(target->GetGUID());
 
-                            events.ScheduleEvent(EVENT_UPPERCUTE, 2 * IN_MILLISECONDS);
+                            events.ScheduleEvent(EVENT_FLAME_BLAST, 2 * IN_MILLISECONDS);
                         });
                     }
                     else // training success
@@ -292,6 +299,18 @@ class npc_burning_steppes_chiseled_golem : public CreatureScript
             }
 
             void JustEngagedWith(Unit* /*who*/) override { }
+
+            // A golem left in a training fight (it leashed) leaves and comes back friendly at its respawn (2010-11-27 reply [+2]);
+            // before, it stood there friendly with its training auras gone.
+            void EnterEvadeMode(EvadeReason why) override
+            {
+                if (!targetGUID.IsEmpty())
+                {
+                    me->DespawnOrUnsummon();
+                    return;
+                }
+                customCreatureAI::EnterEvadeMode(why);
+            }
 
             void UpdateAI(uint32 diff) override
             {
