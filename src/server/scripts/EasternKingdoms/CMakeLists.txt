@@ -167,6 +167,7 @@ set(scripts_STAT_SRCS
   EasternKingdoms/Uldaman/boss_archaedas.cpp
   EasternKingdoms/zone_swamp_of_sorrows.cpp
   EasternKingdoms/zone_swamp_of_sorrows_bullet.cpp
+  EasternKingdoms/zone_swamp_of_sorrows_bogpaddle.cpp
   EasternKingdoms/SunwellPlateau/boss_eredar_twins.cpp
   EasternKingdoms/SunwellPlateau/boss_kiljaeden.cpp
   EasternKingdoms/SunwellPlateau/sunwell_plateau.h
