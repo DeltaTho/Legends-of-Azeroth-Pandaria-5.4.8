@@ -1958,8 +1958,14 @@ SpellCastResult SpellInfo::CheckTarget(Unit const* caster, WorldObject const* ta
     if (AttributesEx & SPELL_ATTR1_CANT_TARGET_SELF && caster == target)
         return SPELL_FAILED_BAD_TARGETS;
 
+    // A vehicle's spell aimed at its own passenger (TARGET_UNIT_TARGET_PASSENGER: Lucien's Search Cloud) skips the visibility and
+    // GM-invisibility checks below: the rider of a story vehicle is hidden server-side from everyone (Unit::SetVisible(false)),
+    // the vehicle included, and the cast was refused with "Invalid target" or "cannot be cast on beastmaster or invis god targets"
+    bool const ownPassenger = (GetExplicitTargetMask() & TARGET_FLAG_UNIT_PASSENGER) && target->ToUnit()
+        && target->ToUnit()->IsOnVehicle(caster);
+
     // check visibility - ignore stealth for implicit (area) targets
-    if (!(AttributesEx6 & SPELL_ATTR6_CAN_TARGET_INVISIBLE) && !caster->CanSeeOrDetect(target, implicit))
+    if (!(AttributesEx6 & SPELL_ATTR6_CAN_TARGET_INVISIBLE) && !ownPassenger && !caster->CanSeeOrDetect(target, implicit))
         return SPELL_FAILED_BAD_TARGETS;
 
     Unit const* unitTarget = target->ToUnit();
@@ -2073,7 +2079,7 @@ SpellCastResult SpellInfo::CheckTarget(Unit const* caster, WorldObject const* ta
     }
 
     // check GM mode and GM invisibility - only for player casts (npc casts are controlled by AI) and negative spells
-    if (unitTarget != caster && (caster->IsControlledByPlayer() || !IsPositive()) && unitTarget->GetTypeId() == TYPEID_PLAYER)
+    if (unitTarget != caster && !ownPassenger && (caster->IsControlledByPlayer() || !IsPositive()) && unitTarget->GetTypeId() == TYPEID_PLAYER)
     {
         if (!unitTarget->ToPlayer()->IsVisible())
             return SPELL_FAILED_BM_OR_INVISGOD;
