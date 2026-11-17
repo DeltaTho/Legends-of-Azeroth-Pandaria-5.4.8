@@ -370,6 +370,7 @@ void AddSC_stormwind_city();
 void AddSC_tol_barad();
 void AddSC_stranglethorn_vale();
 void AddSC_swamp_of_sorrows();
+void AddSC_swamp_of_sorrows_bullet();
 void AddSC_tirisfal_glades();
 void AddSC_undercity();
 void AddSC_vashjir();
@@ -1432,6 +1433,7 @@ void AddEasternKingdomsScripts()
     AddSC_tol_barad();
     AddSC_stranglethorn_vale();
     AddSC_swamp_of_sorrows();
+    AddSC_swamp_of_sorrows_bullet();
     AddSC_tirisfal_glades();
     AddSC_undercity();
     AddSC_vashjir();
