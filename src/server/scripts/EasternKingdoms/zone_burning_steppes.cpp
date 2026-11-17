@@ -348,12 +348,13 @@ class npc_burning_steppes_chiseled_golem : public CreatureScript
    gossip_menu_option 12374 ActionMenuID 12375). Thelaron: "What have ye brought me?" and "I brought you some hides, mud, and
    thread." only for a player who took all three; he checks the race recipe (orc 2-4-2, ogre 4-1-3, goblin 1-3-4, troll 3-2-1) in
    the order hides, mud, thread and says what is wrong (48235 / 48237 hides, 48238 / 48236 mud, 48239 / 48240 thread; the player
-   goes back to the table), or "This... this is perfect! ..." (48241) with the Costume Credit 47910 and the Blackrock Disguise.
+   goes back to the table), or "This... this is perfect! ..." (48241) with the Costume Credit 47910; the disguise itself comes on accepting
+   Into the Black Tooth Hovel (its StartItem; 28202 reply 773680), or from Thelaron when remaking a lost one.
    The choice is per player (the old SmartAI set Thelaron's gossip flag for everybody).
    Ours: who may use the table (a costume quest in the log, or one handed in while the player has no disguise in bags or bank and
    Locked and Loaded 28327 / 28453 is not done: the remake of D11, 28202 [+6], item [+12], GM quote in 28278) - everyone else sees
-   "There is nothing of interest on the table" (17382); the choice kept 10 minutes; the disguise given only to a player without
-   one. Bots never use the table or the gossip (playerbots list). */
+   "There is nothing of interest on the table" (17382); the choice kept 10 minutes; a remake only for a player without a
+   disguise, refused with the bag-full error (choice kept) when it does not fit. Bots never use the table or the gossip (playerbots list). */
 enum TailorsTable
 {
     GO_TAILORS_TABLE                = 206947,
@@ -455,6 +456,12 @@ struct go_burning_steppes_tailors_table : public GameObjectAI
     // Only records the choice: the menus go on through gossip_menu_option.ActionMenuID (Player::OnGossipSelect runs after this).
     bool OnGossipSelect(Player* player, uint32 menuId, uint32 gossipListId) override
     {
+        // The menu id comes from the packet, for any object on the map: only the menu this player has open, in reach of the
+        // table, and only while he may use it
+        if (player->PlayerTalkClass->GetGossipMenu().GetMenuId() != menuId || !me->IsAtInteractDistance(player)
+            || !CanUseTailorsTable(player))
+            return false;
+
         uint8 amount = uint8(std::min<uint32>(gossipListId, 3) + 1);
         switch (menuId)
         {
@@ -541,7 +548,8 @@ struct npc_burning_steppes_thelaron_direneedle : public ScriptedAI
 
     bool OnGossipSelect(Player* player, uint32 menuId, uint32 gossipListId) override
     {
-        if (menuId != MENU_THELARON || gossipListId != OPTION_THELARON_BROUGHT)
+        // The menu id comes from the packet: only the menu this player really has open
+        if (menuId != MENU_THELARON || gossipListId != OPTION_THELARON_BROUGHT || player->PlayerTalkClass->GetGossipMenu().GetMenuId() != menuId)
             return false;
 
         CloseGossipMenuFor(player);
@@ -549,6 +557,14 @@ struct npc_burning_steppes_thelaron_direneedle : public ScriptedAI
         TailorsChoice const* choice = GetFullTailorsChoice(player);
         if (!choice)
             return true;
+
+        // The choice may be older than the player's state: abandoned the costume quest, or found / was given a disguise since.
+        // Only a player who may still use the table gets an answer (a costume quest in the log, or a valid remake).
+        if (!CanUseTailorsTable(player))
+        {
+            TailorsChoices.erase(player->GetGUID());
+            return true;
+        }
 
         std::array<uint8, 3> recipe = RecipeFor(player);
         uint8 line = SAY_THELARON_PERFECT;
@@ -565,6 +581,34 @@ struct npc_burning_steppes_thelaron_direneedle : public ScriptedAI
         else if (choice->Thread > recipe[2])
             line = SAY_THELARON_THREAD_TOO_MUCH;
 
+        // During A Perfect Costume the right answer is the credit only: the disguise comes with Into the Black Tooth Hovel's
+        // StartItem on accepting it (28202 2010-12-16 reply 773680 "doesn't appear in your inventory until you turn in this quest
+        // and accept the next"; the costume quests' ItemDrop1 63357 would destroy one handed out here at the hand-in). A player
+        // remaking a lost disguise (no costume quest in the log) gets the item - and with full bags nothing at all: the bag-full
+        // error, and the choice is kept for the next try.
+        bool remake = true;
+        for (uint32 questId : CostumeQuests)
+            if (player->GetQuestStatus(questId) == QUEST_STATUS_INCOMPLETE)
+                remake = false;
+
+        if (line == SAY_THELARON_PERFECT && remake)
+        {
+            if (player->HasItemCount(ITEM_BLACKROCK_DISGUISE, 1, true)
+                || player->IsQuestRewarded(QUEST_LOCKED_AND_LOADED_A) || player->IsQuestRewarded(QUEST_LOCKED_AND_LOADED_H))
+            {
+                TailorsChoices.erase(player->GetGUID());
+                return true;
+            }
+
+            ItemPosCountVec dest;
+            InventoryResult msg = player->CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, ITEM_BLACKROCK_DISGUISE, 1);
+            if (msg != EQUIP_ERR_OK)
+            {
+                player->SendEquipError(msg, nullptr, nullptr, ITEM_BLACKROCK_DISGUISE);
+                return true;
+            }
+        }
+
         // A wrong answer means a new trip to the table (28428 [+0] 700702).
         TailorsChoices.erase(player->GetGUID());
         Talk(line, player);
@@ -572,10 +616,10 @@ struct npc_burning_steppes_thelaron_direneedle : public ScriptedAI
         if (line != SAY_THELARON_PERFECT)
             return true;
 
-        player->KilledMonsterCredit(NPC_COSTUME_CREDIT);
-        if (!player->HasItemCount(ITEM_BLACKROCK_DISGUISE, 1, true)
-            && !player->IsQuestRewarded(QUEST_LOCKED_AND_LOADED_A) && !player->IsQuestRewarded(QUEST_LOCKED_AND_LOADED_H))
+        if (remake)
             player->AddItem(ITEM_BLACKROCK_DISGUISE, 1);
+        else
+            player->KilledMonsterCredit(NPC_COSTUME_CREDIT);
         return true;
     }
 };
