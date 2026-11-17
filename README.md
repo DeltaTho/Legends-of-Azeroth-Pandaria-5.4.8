@@ -29,7 +29,7 @@ passes will be required to test and validate the alliance's perspective.
 | The Hinterlands | Merged into `playerbot-beta` |
 | Western Plaguelands | Merged into `playerbot-beta` |
 | Eastern Plaguelands | Merged into `playerbot-beta` |
-| Badlands | On `main`, deployed and in testing |
+| Badlands | On [`pr/badlands`](../../tree/pr/badlands), not merged yet |
 
 ## Branches
 
@@ -37,5 +37,6 @@ passes will be required to test and validate the alliance's perspective.
   rebuilt on top of `playerbot-beta` whenever that branch takes our work, so its history is
   rewritten from time to time.
 - `fixes`: general fixes outside the region work that are not in `playerbot-beta` yet.
+- `pr/badlands`: the Badlands set.
 
 Branches of regions that have been merged are removed.
