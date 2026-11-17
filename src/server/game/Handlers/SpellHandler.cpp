@@ -1227,6 +1227,12 @@ void WorldSession::HandleCancelAuraOpcode(WorldPacket& recvPacket)
         if (Spell* curSpell = _player->GetCurrentSpell(CURRENT_CHANNELED_SPELL))
             if (curSpell->m_spellInfo->Id == spellId)
                 _player->InterruptSpell(CURRENT_CHANNELED_SPELL);
+
+        // Unmask 89596 (Burning Steppes): a Blackrock troop channels it on the disguised player, who right-clicks the buff off
+        // to stop the unmasking (28278 comments 2011-04-27, 2013-05-07). Only this spell: other channels cast on a player stay.
+        // The caster's channel ends by itself once its target lost the aura (Spell::UpdateChanneledTargetList).
+        if (spellId == 89596)
+            _player->RemoveOwnedAura(spellId, ObjectGuid::Empty, 0, AURA_REMOVE_BY_CANCEL);
         return;
     }
 
