@@ -86,6 +86,7 @@ enum AssaultData
     NPC_AODR_CAMERA                             = 48373,    // AODR Event Camera, vehicle 1324
     NPC_HELLMONDATH                             = 48409,    // Hellmondath (actor)
     NPC_BLACKROCK_RANKS                         = 48414,    // Blackrock Invader, phase 341 (cinematic only)
+    NPC_ASSAULT_INVADER                         = 48432,    // Blackrock Invader, phase 342: the objective (x200)
     NPC_OBSIDIAN_CLOAKED_DRAGON                 = 48434,    // vehicle 1327
 
     SPELL_AODR_SUMMON_CAMERA_PHASE              = 89947,    // summons 48373 (vehicle summon) + PHASE 341; the quests' start spell
@@ -233,8 +234,9 @@ uint32 const AodrActorEntries[]     = { NPC_XILUN, NPC_NEERALAK, NPC_THORGIZOG, 
 
 // The battle area: the Horn of the Callers' AreaGroup 2846 (Blackrock Pass 2417, Dreadmaul Rock 249, Firegut Furnace 5655, Ruins
 // of Thaurissan 250, Slither Rock 2419, Terror Wing Path 2420; its 2851 is not in the 5.4.8 AreaTable) plus Valley of Ashes 5677,
-// where 164 of the 513 invaders stand (U3; comment 2010-11-30 [+7] fought there). Ours: 5677 in the leash's area
-uint32 const AodrBattleAreas[]      = { 2417, 249, 5655, 250, 2419, 2420, 5677 };
+// where 164 of the 513 invaders stand (U3; comment 2010-11-30 [+7] fought there), and Skull Warren 5656, Neeralak's cave in the
+// rock's flank, which the rider crosses over Dreadmaul Rock (review coverage 4). Ours: 5677 and 5656 in the leash's area
+uint32 const AodrBattleAreas[]      = { 2417, 249, 5655, 250, 2419, 2420, 5677, 5656 };
 uint32 const AodrLeashWarnMs        = 10 * IN_MILLISECONDS;     // "Return to Dreadmaul Rock, or you will be dropped!", then dropped
 float const AodrMidAirYd            = 10.0f;    // an exit higher than this above the ground is sent back to the camp
 
@@ -255,6 +257,13 @@ static bool HoldsAssault(Player* player)
             return true;
     }
     return false;
+}
+
+// The objective done (200 invaders): the quest held as complete
+static bool AssaultComplete(Player* player)
+{
+    return player->GetQuestStatus(QUEST_ASSAULT_ON_DREADMAUL_ROCK_A) == QUEST_STATUS_COMPLETE
+        || player->GetQuestStatus(QUEST_ASSAULT_ON_DREADMAUL_ROCK_H) == QUEST_STATUS_COMPLETE;
 }
 
 static Creature* FindAodrSummonOf(Player* player, uint32 entry, float range = AodrSearchRange)
@@ -328,6 +337,14 @@ static void SummonDragonWhenLanded(Player* player, uint32 tries)
     if (player->IsBeingTeleportedNear() && tries < 25)
     {
         player->m_Events.AddLambdaEventAtOffset([player, tries]() { SummonDragonWhenLanded(player, tries + 1); }, 200);
+        return;
+    }
+
+    // Abandoned in the teleport window: he stands 110 yd above the ground at the reveal point, so he goes back to the camp as an
+    // abandon in the camera does (review F M3). Dead, on another vehicle or still teleporting: nothing to set down
+    if (!HoldsAssault(player) && player->IsAlive() && !player->GetVehicle() && !player->IsBeingTeleported())
+    {
+        SendBackToCamp(player);
         return;
     }
 
@@ -1214,7 +1231,10 @@ private:
             return false;
         }
 
-        if (InAodrBattleArea(me->GetAreaId()))
+        // After the 200th invader he flies home on the dragon and steps off at the camp (comments 2013-11-30 [+4]: "return directly
+        // to Flame Crest on the dragon ... dismount when safely back", 2010-11-28 [+17], 2010-11-30 [+7]): no warning, no drop
+        // inside Burning Steppes. Out of the zone the leash still applies (warning, then dropped at the camp after 10 s)
+        if (InAodrBattleArea(me->GetAreaId()) || (AssaultComplete(player) && me->GetZoneId() == ZONE_BURNING_STEPPES))
         {
             _warned = false;
             _outsideMs = 0;
@@ -1274,6 +1294,36 @@ class spell_bs_aodr_teleport_back_master : public SpellScript
     }
 };
 
+// 90068 - Fiery Breath (the dragon's breath at the aimed point). Kill credit for a grouped rider: the core's KillRewarder
+// rewards a group only within MaxGroupXPDistance (74 yd, 3D) of the victim, the killer included (KillRewarder::InitGroupData /
+// RewardGroup, Player::IsAtGroupRewardDistance), and the rider breathes from 100 yd up - the user always plays in a group (with
+// playerbots), so most kills would count for nobody. For each Blackrock Invader this breath kills, the rider gets the credit here
+// exactly when the core did not give it: grouped and out of that distance (solo, or within it, KillRewarder has credited him
+// already). Ours: the mechanism; the source says one breath counts every invader it kills (comment 2010-11-30 [+7])
+class spell_bs_aodr_fiery_breath : public SpellScript
+{
+    PrepareSpellScript(spell_bs_aodr_fiery_breath);
+
+    void CreditRider()
+    {
+        Unit* victim = GetHitUnit();
+        if (!victim || victim->IsAlive() || victim->GetEntry() != NPC_ASSAULT_INVADER)
+            return;
+
+        Player* rider = GetCaster()->GetCharmerOrOwnerPlayerOrPlayerItself();
+        if (!rider || !rider->GetGroup() || rider->IsAtGroupRewardDistance(victim))
+            return;
+
+        if (HoldsAssault(rider))
+            rider->KilledMonsterCredit(NPC_ASSAULT_INVADER, victim->GetGUID());
+    }
+
+    void Register() override
+    {
+        AfterHit += SpellHitFn(spell_bs_aodr_fiery_breath::CreditRider);
+    }
+};
+
 // A player saved in the air during the Assault (in the camera, or on the dragon: both are gone at the logout) logs in above Burning
 // Steppes and would fall; with the quest held and more than 10 yd above the ground he is set down at his camp (ours). Not one on
 // a flying mount of his own (saved with him)
@@ -1294,13 +1344,34 @@ public:
             || player->HasAuraType(SPELL_AURA_MOD_INCREASE_MOUNTED_FLIGHT_SPEED))
             return;
 
-        float const ground = player->GetMap()->GetHeight(player->GetPhaseMask(), player->GetPositionX(), player->GetPositionY(),
-            player->GetPositionZ(), true, 500.0f);
-        if (ground > INVALID_HEIGHT && player->GetPositionZ() - ground <= AodrMidAirYd)
+        if (!InTheAir(player))
             return;
 
-        Position const& camp = player->GetTeam() == HORDE ? AodrFlameCrest : AodrMorgansVigil;
-        player->NearTeleportTo(camp.GetPositionX(), camp.GetPositionY(), camp.GetPositionZ(), camp.GetOrientation());
+        // Not from OnLogin itself: the client is still on its loading screen and a near teleport sent now may never be
+        // acknowledged (review F M1). He is held in the air meanwhile (gravity off, so no fall once the client takes control) and
+        // set down 3 s later if he still qualifies; otherwise only gravity comes back
+        player->SetDisableGravity(true);
+        player->m_Events.AddLambdaEventAtOffset([player]()
+        {
+            if (!player->IsInWorld() || player->GetSession()->PlayerLogout())
+                return;
+
+            if (!player->GetVehicle() && !player->IsBeingTeleported() && player->IsAlive() && player->GetMapId() == MAP_EASTERN_KINGDOMS
+                && player->GetZoneId() == ZONE_BURNING_STEPPES && HoldsAssault(player) && InTheAir(player))
+            {
+                Position const& camp = player->GetTeam() == HORDE ? AodrFlameCrest : AodrMorgansVigil;
+                player->NearTeleportTo(camp.GetPositionX(), camp.GetPositionY(), camp.GetPositionZ(), camp.GetOrientation());
+            }
+            RestoreGravityLater(player);
+        }, 3000);
+    }
+
+private:
+    static bool InTheAir(Player* player)
+    {
+        float const ground = player->GetMap()->GetHeight(player->GetPhaseMask(), player->GetPositionX(), player->GetPositionY(),
+            player->GetPositionZ(), true, 500.0f);
+        return ground <= INVALID_HEIGHT || player->GetPositionZ() - ground > AodrMidAirYd;
     }
 };
 
@@ -1310,5 +1381,6 @@ void AddSC_burning_steppes_assault()
     new creature_script<npc_bs_aodr_camera>("npc_bs_aodr_camera");
     new creature_script<npc_bs_obsidian_cloaked_dragon>("npc_bs_obsidian_cloaked_dragon");
     new spell_script<spell_bs_aodr_teleport_back_master>("spell_bs_aodr_teleport_back_master");
+    new spell_script<spell_bs_aodr_fiery_breath>("spell_bs_aodr_fiery_breath");
     new player_bs_aodr_login();
 }
