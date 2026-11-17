@@ -181,7 +181,8 @@ class npc_burning_steppes_chiseled_golem : public CreatureScript
         {
             player->PlayerTalkClass->ClearMenus();
 
-            if (action == GOSSIP_ACTION_INFO_DEF + 1)
+            // One trainee per golem: a golem already training (faction 16) is not taken over by a second player
+            if (action == GOSSIP_ACTION_INFO_DEF + 1 && creature->IsAlive() && creature->GetFaction() == 1474)
             {
                 creature->AI()->SetGUID(player->GetGUID());
                 creature->AI()->DoAction(ACTION_GOLEM_TRAINING);
@@ -215,7 +216,7 @@ class npc_burning_steppes_chiseled_golem : public CreatureScript
                 scheduler.CancelAll();
                 targetGUID = ObjectGuid::Empty;
                 hasDefeat = false;
-                me->SetReactState(REACT_AGGRESSIVE);
+                me->SetReactState(REACT_PASSIVE); // fights only its trainee, never pulls anyone (UpdateAI keeps it so)
                 me->SetFaction(1474); // default
             }
 
@@ -229,6 +230,7 @@ class npc_burning_steppes_chiseled_golem : public CreatureScript
                 if (actionId == ACTION_GOLEM_TRAINING)
                 {
                     me->SetFaction(16);
+                    me->SetReactState(REACT_PASSIVE);
 
                     if (Player* target = ObjectAccessor::GetPlayer(*me, targetGUID))
                         AttackStart(target);
@@ -315,6 +317,27 @@ class npc_burning_steppes_chiseled_golem : public CreatureScript
             void UpdateAI(uint32 diff) override
             {
                 scheduler.Update(diff);
+
+                // Faction 16 is hostile to every player: stay passive (RemoveChanneledCast after a repair or Flame Blast sets
+                // REACT_AGGRESSIVE) and on the trainee, so bystanders and the trainee's bots are never pulled; their hits do not
+                // turn it on them. No trainee left: leave (EnterEvadeMode despawns).
+                if (!targetGUID.IsEmpty() && me->IsAlive())
+                {
+                    if (!me->HasReactState(REACT_PASSIVE))
+                        me->SetReactState(REACT_PASSIVE);
+
+                    Unit* victim = me->GetVictim();
+                    if (victim && victim->GetGUID() != targetGUID && !hasDefeat)
+                    {
+                        if (Player* trainee = ObjectAccessor::GetPlayer(*me, targetGUID))
+                            AttackStart(trainee);
+                        else
+                        {
+                            EnterEvadeMode(EVADE_REASON_OTHER);
+                            return;
+                        }
+                    }
+                }
 
                 if (!UpdateVictim())
                     return;
