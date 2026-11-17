@@ -3712,6 +3712,12 @@ class spell_monk_black_ox_statue_guard_selector : public SpellScript
     void SelectTarget(std::list<WorldObject*>& targets)
     {
         Unit* monk = GetCaster()->GetOwner();
+        if (!monk)
+        {
+            // The statue can outlive its monk (logout, despawn): no owner, no one to guard
+            targets.clear();
+            return;
+        }
         Trinity::NotInRaidWithCheck check{ monk };
         targets.remove_if([&](WorldObject const* target) { return target == monk || check(target); });
         targets.sort(Trinity::HealthPctOrderWorldObjectPred{});
