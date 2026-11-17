@@ -1094,6 +1094,151 @@ class spell_burning_steppes_scorpid_barb : public SpellScript
     }
 };
 
+/* Unmask 89596 (I Am the Law and I Am the Lash 28278 / 28439, Abuse of Power 28279 / 28440; designed with the Black Tooth Hovel).
+   Cast by a Blackrock troop on the disguised player who cudgeled it (Blackrock Soldier 7025, Smolderthorn Assassin 48119, Firegut
+   Flamespeaker 48121 on a "notice" roll, Blackrock Sergeant 48201 on his first hit: their SmartAI, target = the invoker). An 8 s
+   channel; its aura's one periodic dummy tick is the end of the channel. Nothing scripted it, so nobody was ever unmasked.
+   What the player sees (28278 2011-04-27 [+18] entropicdragon, 2010-12-03 [+5], 2011-01-30 [+2], 2013-05-07 [+6]; wiki 28278):
+   at once a raid-boss whisper "You've been spotted! Club your target to death before you are unmasked!" (48432) and the Unmask
+   buff counting down; killing the troop in time, breaking its channel or right-clicking the buff (core change in
+   HandleCancelAuraOpcode) and nothing happens - the troop "just stands there"; otherwise the player casts Unmask Effect 89594 on
+   himself (removes 89261, and through spell_linked_spell the race aura and its forced reaction), gets "You've been unmasked! Get to
+   safety, then put your disguise back on!" (48433) and the troop and every Blackrock within 10 yd attack.
+   Ours: the whispers as raid-boss whispers from the troop, sent only to a player who wears the disguise (the troops' in-combat
+   "Unmask on close" casts on an undisguised player stay silent and do nothing); the unmask fired on the tick or on removal by
+   expiry, whichever comes first (Spell::SendChannelUpdate sets the aura's duration to 0 when the channel ends, so the expiry can
+   come before the tick when the caster updates first), only once; the attack and the 10 yd call for help. Removal by cancel
+   (right-click, the caster's death or interrupt), death or logout: nothing.
+   The troop does not regenerate health while it channels Unmask on a disguised player. A cudgeled troop stays friendly and out of
+   combat (the cudgel has NO_THREAT and the player is forced friendly), and Creature::Regenerate heals an out-of-combat creature
+   whose isRegeneratingHealth() is set by a third of its health every 2 s (amount in Unit::RegenerateHealth), more than one cudgel
+   hit: a spotted troop could not be clubbed to death in time. Sourced: four quick hits kill it within the few seconds the unmask
+   takes (wiki 28278 / 28279; 28440 2010-12-06, "just keep clicking the cudgel"); ours: the mechanism. Regeneration comes back
+   (the template's value) when the aura ends, however it ends; and, because that restore finds the troop through the player's map
+   (a player who changes map inside the 8 s takes the aura with him), the troop also restores it itself 9 s after the hold began,
+   or later while it still channels Unmask. Creature::Respawn does not reset the flag (UpdateEntry only on an entry change). */
+enum Unmask
+{
+    SPELL_BLACKROCK_DISGUISE        = 89261,
+    SPELL_UNMASK                    = 89596,
+    SPELL_UNMASK_EFFECT             = 89594,
+    TEXT_YOU_HAVE_BEEN_SPOTTED      = 48432,
+    TEXT_YOU_HAVE_BEEN_UNMASKED     = 48433,
+};
+
+// The troop's own backstop for the regeneration hold: restore the template's value once it no longer channels Unmask
+static void ScheduleUnmaskRegenBackstop(Creature* troop, uint32 delay)
+{
+    troop->m_Events.Schedule(delay, [troop]()
+    {
+        Spell* channel = troop->GetCurrentSpell(CURRENT_CHANNELED_SPELL);
+        if (channel && channel->GetSpellInfo()->Id == SPELL_UNMASK)
+        {
+            ScheduleUnmaskRegenBackstop(troop, 1000);
+            return;
+        }
+        troop->setRegeneratingHealth(troop->GetCreatureTemplate()->RegenHealth);
+    });
+}
+
+// 89596 Unmask
+class spell_burning_steppes_unmask : public AuraScript
+{
+    PrepareAuraScript(spell_burning_steppes_unmask);
+
+    bool unmasked = false;
+    bool regenHeld = false;
+
+    void AfterApply(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
+    {
+        Player* player = GetTarget()->ToPlayer();
+        Unit* caster = GetCaster();
+        if (!player || !caster || !player->HasAura(SPELL_BLACKROCK_DISGUISE))
+            return;
+
+        caster->Whisper(TEXT_YOU_HAVE_BEEN_SPOTTED, player, true);
+
+        // Out of combat it would heal a third of its health every 2 s: the player could not club it to death before the unmask
+        if (Creature* troop = caster->ToCreature())
+        {
+            troop->setRegeneratingHealth(false);
+            regenHeld = true;
+            ScheduleUnmaskRegenBackstop(troop, 9000);
+        }
+    }
+
+    void RestoreRegen()
+    {
+        if (!regenHeld)
+            return;
+        regenHeld = false;
+
+        if (Creature* troop = GetCaster() ? GetCaster()->ToCreature() : nullptr)
+            troop->setRegeneratingHealth(troop->GetCreatureTemplate()->RegenHealth);
+    }
+
+    void DoUnmask()
+    {
+        if (unmasked)
+            return;
+        unmasked = true;
+
+        Player* player = GetTarget()->ToPlayer();
+        if (!player || !player->IsAlive() || !player->HasAura(SPELL_BLACKROCK_DISGUISE))
+            return;
+
+        player->CastSpell(player, SPELL_UNMASK_EFFECT, true);
+        TC_LOG_DEBUG("scripts", "Burning Steppes: player %u unmasked", player->GetGUID().GetCounter());
+
+        Creature* troop = GetCaster() ? GetCaster()->ToCreature() : nullptr;
+        if (!troop || !troop->IsAlive())
+            return;
+
+        troop->Whisper(TEXT_YOU_HAVE_BEEN_UNMASKED, player, true);
+        if (troop->IsAIEnabled && troop->IsValidAttackTarget(player))
+        {
+            troop->AI()->AttackStart(player);
+            troop->CallForHelp(10.0f);
+        }
+    }
+
+    void HandleTick(AuraEffect const* /*aurEff*/)
+    {
+        DoUnmask();
+    }
+
+    void AfterRemove(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
+    {
+        if (GetTargetApplication()->GetRemoveMode() == AURA_REMOVE_BY_EXPIRE)
+            DoUnmask();
+
+        RestoreRegen();
+    }
+
+    void Register() override
+    {
+        AfterEffectApply += AuraEffectApplyFn(spell_burning_steppes_unmask::AfterApply, EFFECT_0, SPELL_AURA_PERIODIC_DUMMY, AURA_EFFECT_HANDLE_REAL);
+        OnEffectPeriodic += AuraEffectPeriodicFn(spell_burning_steppes_unmask::HandleTick, EFFECT_0, SPELL_AURA_PERIODIC_DUMMY);
+        AfterEffectRemove += AuraEffectRemoveFn(spell_burning_steppes_unmask::AfterRemove, EFFECT_0, SPELL_AURA_PERIODIC_DUMMY, AURA_EFFECT_HANDLE_REAL);
+    }
+};
+
+// 89594 Unmask Effect: eff0 removes 89261; eff1 SCRIPT_EFFECT has nothing left to do (the race aura goes by spell_linked_spell)
+class spell_burning_steppes_unmask_effect : public SpellScript
+{
+    PrepareSpellScript(spell_burning_steppes_unmask_effect);
+
+    void HandleScript(SpellEffIndex effIndex)
+    {
+        PreventHitDefaultEffect(effIndex);
+    }
+
+    void Register() override
+    {
+        OnEffectHitTarget += SpellEffectFn(spell_burning_steppes_unmask_effect::HandleScript, EFFECT_1, SPELL_EFFECT_SCRIPT_EFFECT);
+    }
+};
+
 void AddSC_burning_steppes()
 {
     new creature_script<npc_burning_steppes_war_reaver>("npc_burning_steppes_war_reaver");
@@ -1106,4 +1251,6 @@ void AddSC_burning_steppes()
     RegisterCreatureAI(npc_burning_steppes_worgmistress_othana);
     RegisterCreatureAI(npc_burning_steppes_gorlop);
     RegisterSpellScript(spell_burning_steppes_scorpid_barb);
+    new aura_script<spell_burning_steppes_unmask>("spell_burning_steppes_unmask");
+    new spell_script<spell_burning_steppes_unmask_effect>("spell_burning_steppes_unmask_effect");
 }
