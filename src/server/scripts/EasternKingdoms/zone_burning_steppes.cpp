@@ -629,14 +629,16 @@ struct npc_burning_steppes_thelaron_direneedle : public ScriptedAI
    89467 is a server-side spell 5.4.8 lacks; the DBC has 89465 "Summon Boot Spiders - 50% Hit" (89466 at 50 %) and 89466 Summon
    Boot Spiders (one 48106, wild, 3 min, at a random point 1-2 yd in front of the caster).
    What the player sees: after the "Polishing Vigorously" bar, 0-4 spiders crawl out of the boots and attack (also in the disguise:
-   spiders are not Blackrock). Ours: four 50 % rolls of 89466 per polish (0-4, 2 on average; the comments say 2-4, "may"), cast
-   from the boots, only while Grunt Work is in the log incomplete. The polish credit is the goober's own (KillCreditGO). */
+   spiders are not Blackrock). Ours: two spiders plus two 50 % rolls per polish (2-4, 3 on average: the comments say "2-4, most
+   times 4", "usually 3, sometimes 2"; the less grindy reading of them), each one cast of 89466 from the boots, only while Grunt
+   Work is in the log incomplete. The polish credit is the goober's own (KillCreditGO). */
 enum BlackrockBoots
 {
     QUEST_GRUNT_WORK_A              = 28245,
     QUEST_GRUNT_WORK_H              = 28433,
     SPELL_SUMMON_BOOT_SPIDERS       = 89466,
-    BOOT_SPIDER_ROLLS               = 4,
+    BOOT_SPIDERS_MIN                = 2,
+    BOOT_SPIDER_ROLLS               = 2,
     BOOT_SPIDER_CHANCE              = 50,
 };
 
@@ -654,9 +656,12 @@ struct go_burning_steppes_blackrock_boots : public GameObjectAI
         if (player->GetQuestStatus(QUEST_GRUNT_WORK_A) != QUEST_STATUS_INCOMPLETE && player->GetQuestStatus(QUEST_GRUNT_WORK_H) != QUEST_STATUS_INCOMPLETE)
             return false;
 
+        uint8 spiders = BOOT_SPIDERS_MIN;
         for (uint8 i = 0; i < BOOT_SPIDER_ROLLS; ++i)
             if (roll_chance_i(BOOT_SPIDER_CHANCE))
-                me->CastSpell(player, SPELL_SUMMON_BOOT_SPIDERS);
+                ++spiders;
+        for (uint8 i = 0; i < spiders; ++i)
+            me->CastSpell(player, SPELL_SUMMON_BOOT_SPIDERS);
 
         return false; // the goober's own use (credit, despawn timer) goes on
     }
