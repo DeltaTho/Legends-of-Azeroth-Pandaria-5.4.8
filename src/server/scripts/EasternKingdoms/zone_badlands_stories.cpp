@@ -561,9 +561,15 @@ protected:
         return player->GetVehicleBase() == me && player->GetTransSeat() == SEAT_CONTROL;
     }
 
+    // The objective's counter, read here: Player::GetReqKillOrCastCurrentCount looks at the objectives only when the quest also
+    // has an item objective, so it gave 0 for the stories' kill-credit-only quests (research/_core-issues.md C59)
     uint32 CreditCount(Player* player, uint32 entry) const
     {
-        return player->GetReqKillOrCastCurrentCount(_story->Quest, int32(entry));
+        if (Quest const* quest = sObjectMgr->GetQuestTemplate(_story->Quest))
+            for (QuestObjective const& objective : quest->Objectives)
+                if (objective.Type == QUEST_OBJECTIVE_MONSTER && objective.ObjectID == entry)
+                    return player->GetQuestObjectiveCounter(objective.ID);
+        return 0;
     }
 
     void Credit(Player* player, uint32 entry)
