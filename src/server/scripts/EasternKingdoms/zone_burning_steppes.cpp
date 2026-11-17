@@ -558,6 +558,44 @@ struct npc_burning_steppes_thelaron_direneedle : public ScriptedAI
     }
 };
 
+/* Grunt Work (28245 / 28433): polishing Blackrock Boots 206977 sometimes lets Boot Spiders 48106 (~450 hp, level 50-51) out
+   (28245 [+10] 141466 + reply; 28433 [+3] Catriona + replies "2-4, most times 4", "usually 3, sometimes 2"). The boots' data10
+   89467 is a server-side spell 5.4.8 lacks; the DBC has 89465 "Summon Boot Spiders - 50% Hit" (89466 at 50 %) and 89466 Summon
+   Boot Spiders (one 48106, wild, 3 min, at a random point 1-2 yd in front of the caster).
+   What the player sees: after the "Polishing Vigorously" bar, 0-4 spiders crawl out of the boots and attack (also in the disguise:
+   spiders are not Blackrock). Ours: four 50 % rolls of 89466 per polish (0-4, 2 on average; the comments say 2-4, "may"), cast
+   from the boots, only while Grunt Work is in the log incomplete. The polish credit is the goober's own (KillCreditGO). */
+enum BlackrockBoots
+{
+    QUEST_GRUNT_WORK_A              = 28245,
+    QUEST_GRUNT_WORK_H              = 28433,
+    SPELL_SUMMON_BOOT_SPIDERS       = 89466,
+    BOOT_SPIDER_ROLLS               = 4,
+    BOOT_SPIDER_CHANCE              = 50,
+};
+
+// Blackrock Boots 206977
+struct go_burning_steppes_blackrock_boots : public GameObjectAI
+{
+    go_burning_steppes_blackrock_boots(GameObject* go) : GameObjectAI(go) { }
+
+    // isUse: GameObject::Use, once per completed polish; CMSG_GAMEOBJ_REPORT_USE calls this again with isUse false
+    bool OnGossipHello(Player* player, bool isUse) override
+    {
+        if (!isUse)
+            return false;
+
+        if (player->GetQuestStatus(QUEST_GRUNT_WORK_A) != QUEST_STATUS_INCOMPLETE && player->GetQuestStatus(QUEST_GRUNT_WORK_H) != QUEST_STATUS_INCOMPLETE)
+            return false;
+
+        for (uint8 i = 0; i < BOOT_SPIDER_ROLLS; ++i)
+            if (roll_chance_i(BOOT_SPIDER_CHANCE))
+                me->CastSpell(player, SPELL_SUMMON_BOOT_SPIDERS);
+
+        return false; // the goober's own use (credit, despawn timer) goes on
+    }
+};
+
 void AddSC_burning_steppes()
 {
     new creature_script<npc_burning_steppes_war_reaver>("npc_burning_steppes_war_reaver");
@@ -565,4 +603,5 @@ void AddSC_burning_steppes()
     new npc_burning_steppes_chiseled_golem();
     RegisterGameObjectAI(go_burning_steppes_tailors_table);
     RegisterCreatureAI(npc_burning_steppes_thelaron_direneedle);
+    RegisterGameObjectAI(go_burning_steppes_blackrock_boots);
 }
