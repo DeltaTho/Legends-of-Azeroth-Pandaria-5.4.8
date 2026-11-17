@@ -27,8 +27,8 @@ passes will be required to test and validate the alliance's perspective.
 | Hillsbrad Foothills | Merged into `playerbot-beta` |
 | Arathi Highlands | Merged into `playerbot-beta` |
 | The Hinterlands | Merged into `playerbot-beta` |
-| Western Plaguelands | On [`pr/western-plaguelands`](../../tree/pr/western-plaguelands), not merged yet |
-| Eastern Plaguelands | Tested; on [`pr/eastern-plaguelands`](../../tree/pr/eastern-plaguelands), not merged yet |
+| Western Plaguelands | Merged into `playerbot-beta` |
+| Eastern Plaguelands | Merged into `playerbot-beta` |
 | Badlands | On `main`, deployed and in testing |
 
 ## Branches
@@ -37,7 +37,5 @@ passes will be required to test and validate the alliance's perspective.
   rebuilt on top of `playerbot-beta` whenever that branch takes our work, so its history is
   rewritten from time to time.
 - `fixes`: general fixes outside the region work that are not in `playerbot-beta` yet.
-- `pr/western-plaguelands`: the Western Plaguelands set.
-- `pr/eastern-plaguelands`: the Eastern Plaguelands set.
 
 Branches of regions that have been merged are removed.
