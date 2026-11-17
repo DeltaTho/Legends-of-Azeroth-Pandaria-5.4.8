@@ -99,6 +99,8 @@ enum AssaultData
     SPELL_OBSIDIAN_CLOAKED_DRAGON_FLIGHT        = 90071,    // FLY, knockback immunity, vehicle flight speed +240 %
     SPELL_CALL_OF_THE_RED_DRAGONFLIGHT          = 90079,    // the Horn of the Callers' dragon
     SPELL_AODR_TELEPORT_BACK_MASTER             = 93901,    // dummy: 93900 Flame Crest (effect 0) / 93898 Morgan's Vigil (effect 1)
+    SPELL_AODR_TELEPORT_TO_MORGANS_VIGIL        = 93898,
+    SPELL_AODR_TELEPORT_TO_FLAME_CREST          = 93900,
 
     // VehicleSeat ids of 1324 by seat index: 0 = 9099 (CameraMode 120, flight), 1 = 9103 (CameraMode 119, aimed)
     SEAT_CAMERA_FLIGHT                          = 0,
@@ -155,6 +157,18 @@ enum AssaultCameraEvents
     EVENT_BACK_TO_THE_LEDGE,
     EVENT_RETREAT,
     EVENT_CAMERA_END,
+};
+
+enum AssaultDragonEvents
+{
+    EVENT_DRAGON_NO_RIDER                       = 1,
+    EVENT_DRAGON_CHECK,
+    EVENT_REVEAL_LAUGH,
+    EVENT_REVEAL_TO_THE_DRAGONS,
+    EVENT_REVEAL_NO_DRAGONS,
+    EVENT_REVEAL_PANICKING,
+    EVENT_REVEAL_PIT_LORD_GONE,
+    EVENT_REVEAL_END,
 };
 
 // Where the camera holds for the war council: 26 yd west of the Big Three, 8 yd above them, over the cliff. The three stand
@@ -216,6 +230,21 @@ float const AodrRampageScatterYd    = 30.0f;
 uint32 const AodrRampageKillCap     = 8;
 
 uint32 const AodrActorEntries[]     = { NPC_XILUN, NPC_NEERALAK, NPC_THORGIZOG, NPC_HELLMONDATH };
+
+// The battle area: the Horn of the Callers' AreaGroup 2846 (Blackrock Pass 2417, Dreadmaul Rock 249, Firegut Furnace 5655, Ruins
+// of Thaurissan 250, Slither Rock 2419, Terror Wing Path 2420; its 2851 is not in the 5.4.8 AreaTable) plus Valley of Ashes 5677,
+// where 164 of the 513 invaders stand (U3; comment 2010-11-30 [+7] fought there). Ours: 5677 in the leash's area
+uint32 const AodrBattleAreas[]      = { 2417, 249, 5655, 250, 2419, 2420, 5677 };
+uint32 const AodrLeashWarnMs        = 10 * IN_MILLISECONDS;     // "Return to Dreadmaul Rock, or you will be dropped!", then dropped
+float const AodrMidAirYd            = 10.0f;    // an exit higher than this above the ground is sent back to the camp
+
+static bool InAodrBattleArea(uint32 areaId)
+{
+    for (uint32 area : AodrBattleAreas)
+        if (area == areaId)
+            return true;
+    return false;
+}
 
 static bool HoldsAssault(Player* player)
 {
@@ -1007,8 +1036,267 @@ private:
     bool _riderHidden = false;
 };
 
+// 48434 - Obsidian-Cloaked Dragon (vehicle 1327), from the cutscene's end (90069) or the Horn of the Callers (90079)
+// The rider flies it freely (seat 9106: CAN_CONTROL, CAN_CAST; user question Q2, default free flight with a leash) and breathes
+// Fiery Breath (spell1 90067: a missile at the aimed point, 90068 on Blackrock Invaders 48432 within 15 yd: condition 13).
+// Flight: 90071 (FLY, knockback immunity, vehicle flight speed +240 %) is put on again once the rider controls it, so that the
+// controlling client gets CAN_FLY and pitching (Unit::SetCanFly sends ALWAYS_ALLOW_PITCHING only to a client-moved unit); the Fly
+// animation tier (C45). Seat 9107 stays empty (Q3).
+// Leash: outside the battle area the rider is told "Return to Dreadmaul Rock, or you will be dropped!" once; 10 s later, still
+// outside, he is put off and taken back to his camp (93901 -> 93898 / 93900). So is a rider who leaves it higher than 10 yd above
+// the ground (Leave button, the quest abandoned), instead of a 100-yd fall; one who lands and steps off stays where he is
+// (comments 2010-11-28 [+17], 2013-11-30 [+4]: fly back to the camp and dismount). The dragon is his Minion: it goes 1 ms after
+// he leaves it (Unit::_ExitVehicle), and with him at a logout.
+// After the cutscene (summoned by 90069) it also plays the reveal's end: he laughs (wiki), Thorg'izog's "run toward those
+// dragons" and Neeralak's "I never called any dragons...", then "The Blackrock forces are panicking!  Strike at them now!"; the
+// actors go 25 s after the reveal (Hellmondath at 12 s). Ours: the timings, the laugh as the player's emote, Thorg'izog's point
+struct npc_bs_obsidian_cloaked_dragon : public VehicleAI
+{
+    npc_bs_obsidian_cloaked_dragon(Creature* creature) : VehicleAI(creature) { }
+
+    void IsSummonedBy(Unit* summoner) override
+    {
+        Player* player = summoner ? summoner->ToPlayer() : nullptr;
+        if (!player)
+        {
+            me->DespawnOrUnsummon();
+            return;
+        }
+
+        _playerGUID = player->GetGUID();
+        _fromCutscene = me->GetUInt32Value(UNIT_FIELD_CREATED_BY_SPELL) == SPELL_AODR_SUMMON_DRAGON;
+        me->SetReactState(REACT_PASSIVE);
+        me->CastSpell(me, SPELL_OBSIDIAN_CLOAKED_DRAGON_FLIGHT, true);
+
+        // The summon seats him at once (vehicle summon); should that not have happened, the dragon goes
+        _events.ScheduleEvent(EVENT_DRAGON_NO_RIDER, 2s);
+    }
+
+    void PassengerBoarded(Unit* passenger, int8 seatId, bool apply) override
+    {
+        if (_changingSeat || passenger->GetGUID() != _playerGUID)
+            return;
+
+        Player* player = passenger->ToPlayer();
+        if (!player)
+            return;
+
+        if (apply)
+        {
+            if (seatId != SEAT_DRAGON_CONTROL)
+            {
+                _changingSeat = true;
+                player->ChangeSeat(SEAT_DRAGON_CONTROL);
+                _changingSeat = false;
+            }
+
+            _seated = true;
+            _events.CancelEvent(EVENT_DRAGON_NO_RIDER);
+            _events.ScheduleEvent(EVENT_DRAGON_CHECK, 1s);
+
+            // Not in the cutscene's phase (the summon copied it; 90069 then ends it on the player)
+            me->SetPhased(341, true, false);
+
+            // The flight for the controlling client (see above)
+            me->RemoveAurasDueToSpell(SPELL_OBSIDIAN_CLOAKED_DRAGON_FLIGHT);
+            me->CastSpell(me, SPELL_OBSIDIAN_CLOAKED_DRAGON_FLIGHT, true);
+            me->SetAlwaysAllowPitching(true);
+            me->SetFlying(true);
+
+            if (_fromCutscene && !_revealStarted)
+            {
+                _revealStarted = true;
+                _events.ScheduleEvent(EVENT_REVEAL_LAUGH, 1500ms);
+                _events.ScheduleEvent(EVENT_REVEAL_TO_THE_DRAGONS, 2s);
+                _events.ScheduleEvent(EVENT_REVEAL_NO_DRAGONS, 6500ms);
+                _events.ScheduleEvent(EVENT_REVEAL_PANICKING, 9s);
+                _events.ScheduleEvent(EVENT_REVEAL_PIT_LORD_GONE, 12s);
+                _events.ScheduleEvent(EVENT_REVEAL_END, 25s);
+            }
+            return;
+        }
+
+        if (!_seated)
+            return;
+        _seated = false;
+        _events.Reset();
+
+        // The reveal's actors go with the dragon
+        if (_revealStarted && !_revealDone)
+        {
+            _revealDone = true;
+            DespawnAodrActorsOf(player);
+        }
+
+        if (!player->IsInWorld() || player->GetSession()->PlayerLogout() || !player->IsAlive() || player->IsBeingTeleported())
+            return;
+
+        float const ground = me->GetMap()->GetHeight(me->GetPhaseMask(), me->GetPositionX(), me->GetPositionY(), me->GetPositionZ(), true, 500.0f);
+        if (ground <= INVALID_HEIGHT || me->GetPositionZ() - ground > AodrMidAirYd)
+            SendBackToCamp(player);
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        VehicleAI::UpdateAI(diff);
+
+        _events.Update(diff);
+        while (uint32 eventId = _events.ExecuteEvent())
+        {
+            Player* player = ObjectAccessor::GetPlayer(*me, _playerGUID);
+            if (!player || !player->IsInWorld())
+                return;
+
+            switch (eventId)
+            {
+                case EVENT_DRAGON_NO_RIDER:
+                    if (!_seated)
+                        me->DespawnOrUnsummon();
+                    return;
+                case EVENT_DRAGON_CHECK:
+                    if (!Check(player))
+                        return;
+                    _events.ScheduleEvent(EVENT_DRAGON_CHECK, 1s);
+                    break;
+                case EVENT_REVEAL_LAUGH:
+                    player->HandleEmoteCommand(EMOTE_ONESHOT_LAUGH);
+                    break;
+                case EVENT_REVEAL_TO_THE_DRAGONS:
+                    if (Creature* thorgizog = FindAodrSummonOf(player, NPC_THORGIZOG))
+                    {
+                        thorgizog->HandleEmoteCommand(EMOTE_ONESHOT_POINT);
+                        thorgizog->AI()->Talk(TALK_THORGIZOG_DRAGONS, player);
+                    }
+                    break;
+                case EVENT_REVEAL_NO_DRAGONS:
+                    if (Creature* neeralak = FindAodrSummonOf(player, NPC_NEERALAK))
+                        neeralak->AI()->Talk(TALK_NEERALAK_NO_DRAGONS, player);
+                    break;
+                case EVENT_REVEAL_PANICKING:
+                    Talk(TALK_DRAGON_PANICKING, player);
+                    break;
+                case EVENT_REVEAL_PIT_LORD_GONE:
+                    if (Creature* pitLord = FindAodrSummonOf(player, NPC_HELLMONDATH))
+                        pitLord->DespawnOrUnsummon();
+                    break;
+                case EVENT_REVEAL_END:
+                    _revealDone = true;
+                    DespawnAodrActorsOf(player);
+                    break;
+                default:
+                    break;
+            }
+        }
+    }
+
+private:
+    // Once a second while he rides: the quest dropped (abandoned) puts him off; the leash
+    bool Check(Player* player)
+    {
+        if (player->GetVehicleBase() != me)
+            return false;
+
+        if (!HoldsAssault(player))
+        {
+            player->ExitVehicle();
+            return false;
+        }
+
+        if (InAodrBattleArea(me->GetAreaId()))
+        {
+            _warned = false;
+            _outsideMs = 0;
+            return true;
+        }
+
+        if (!_warned)
+        {
+            _warned = true;
+            _outsideMs = 0;
+            Talk(TALK_DRAGON_RETURN, player);
+            return true;
+        }
+
+        _outsideMs += 1 * IN_MILLISECONDS;
+        if (_outsideMs >= AodrLeashWarnMs)
+        {
+            player->ExitVehicle();
+            return false;
+        }
+        return true;
+    }
+
+    EventMap _events;
+    ObjectGuid _playerGUID;
+    uint32 _outsideMs = 0;
+    bool _fromCutscene = false;
+    bool _seated = false;
+    bool _changingSeat = false;
+    bool _warned = false;
+    bool _revealStarted = false;
+    bool _revealDone = false;
+};
+
+// 93901 - AODR: Teleport Back Master. Its two dummy effects carry the two teleports (effect 0: 93900 to Flame Crest, effect 1:
+// 93898 to Morgan's Vigil); the player gets his own side's
+class spell_bs_aodr_teleport_back_master : public SpellScript
+{
+    PrepareSpellScript(spell_bs_aodr_teleport_back_master);
+
+    void HandleDummy(SpellEffIndex effIndex)
+    {
+        PreventHitDefaultEffect(effIndex);
+        Player* player = GetHitPlayer();
+        if (!player)
+            return;
+
+        bool const horde = player->GetTeam() == HORDE;
+        if ((effIndex == EFFECT_0) == horde)
+            player->CastSpell(player, horde ? SPELL_AODR_TELEPORT_TO_FLAME_CREST : SPELL_AODR_TELEPORT_TO_MORGANS_VIGIL, true);
+    }
+
+    void Register() override
+    {
+        OnEffectHitTarget += SpellEffectFn(spell_bs_aodr_teleport_back_master::HandleDummy, EFFECT_0, SPELL_EFFECT_DUMMY);
+        OnEffectHitTarget += SpellEffectFn(spell_bs_aodr_teleport_back_master::HandleDummy, EFFECT_1, SPELL_EFFECT_DUMMY);
+    }
+};
+
+// A player saved in the air during the Assault (in the camera, or on the dragon: both are gone at the logout) logs in above Burning
+// Steppes and would fall; with the quest held and more than 10 yd above the ground he is set down at his camp (ours). Not one on
+// a flying mount of his own (saved with him)
+class player_bs_aodr_login : public PlayerScript
+{
+public:
+    player_bs_aodr_login() : PlayerScript("player_bs_aodr_login") { }
+
+    void OnLogin(Player* player) override
+    {
+        if (player->GetVehicle())
+            return;
+
+        player->RemoveAurasDueToSpell(SPELL_AODR_SUMMON_CAMERA_PHASE);
+
+        if (player->GetMapId() != MAP_EASTERN_KINGDOMS || player->GetZoneId() != ZONE_BURNING_STEPPES || !player->IsAlive()
+            || !HoldsAssault(player) || player->IsMounted() || player->HasAuraType(SPELL_AURA_FLY)
+            || player->HasAuraType(SPELL_AURA_MOD_INCREASE_MOUNTED_FLIGHT_SPEED))
+            return;
+
+        float const ground = player->GetMap()->GetHeight(player->GetPhaseMask(), player->GetPositionX(), player->GetPositionY(),
+            player->GetPositionZ(), true, 500.0f);
+        if (ground > INVALID_HEIGHT && player->GetPositionZ() - ground <= AodrMidAirYd)
+            return;
+
+        Position const& camp = player->GetTeam() == HORDE ? AodrFlameCrest : AodrMorgansVigil;
+        player->NearTeleportTo(camp.GetPositionX(), camp.GetPositionY(), camp.GetPositionZ(), camp.GetOrientation());
+    }
+};
+
 void AddSC_burning_steppes_assault()
 {
     new creature_script<npc_bs_aodr_actor>("npc_bs_aodr_actor");
     new creature_script<npc_bs_aodr_camera>("npc_bs_aodr_camera");
+    new creature_script<npc_bs_obsidian_cloaked_dragon>("npc_bs_obsidian_cloaked_dragon");
+    new spell_script<spell_bs_aodr_teleport_back_master>("spell_bs_aodr_teleport_back_master");
+    new player_bs_aodr_login();
 }
