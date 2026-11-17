@@ -466,7 +466,7 @@ private:
 struct npc_bs_aodr_camera : public ScriptedAI
 {
     npc_bs_aodr_camera(Creature* creature) : ScriptedAI(creature), _boardTries(0), _killed(0), _started(false), _done(false),
-        _changingSeat(false), _bot(false), _councilCalled(false) { }
+        _changingSeat(false), _noScene(false), _councilCalled(false) { }
 
     void IsSummonedBy(Unit* summoner) override
     {
@@ -478,7 +478,9 @@ struct npc_bs_aodr_camera : public ScriptedAI
         }
 
         _playerGUID = player->GetGUID();
-        _bot = player->GetSession()->IsBot();
+        // No scene for a playerbot (it cannot fly the dragon), nor for a quest taken outside Burning Steppes (a share): the camera
+        // would fly there from anywhere. The horn calls the dragon in the battle area
+        _noScene = player->GetSession()->IsBot() || player->GetMapId() != MAP_EASTERN_KINGDOMS || player->GetZoneId() != ZONE_BURNING_STEPPES;
         _summonerSpot = player->GetPosition();
 
         me->SetReactState(REACT_PASSIVE);
@@ -492,10 +494,10 @@ struct npc_bs_aodr_camera : public ScriptedAI
         _events.ScheduleEvent(EVENT_CAMERA_WAIT_FOR_RIDER, 500ms);
     }
 
-    // A bot is put off where it stood (the camera's random spot is up to 40 yd away)
+    // Without a scene he is put off where he stood (the camera's random spot is up to 40 yd away)
     void GetPassengerExitPosition(Unit* passenger, int8 /*seatId*/, Position& pos) override
     {
-        if (_bot && passenger->GetGUID() == _playerGUID)
+        if (_noScene && passenger->GetGUID() == _playerGUID)
             pos.Relocate(_summonerSpot);
     }
 
@@ -575,9 +577,9 @@ private:
         switch (eventId)
         {
             case EVENT_CAMERA_WAIT_FOR_RIDER:
-                if (_bot)
+                if (_noScene)
                 {
-                    // No scene for a bot: off the camera, out of phase 341 (the aura lands after the summon)
+                    // No scene: off the camera, out of phase 341 (the aura lands after the summon)
                     _done = true;
                     if (player->GetVehicleBase() == me)
                         player->ExitVehicle();
@@ -616,6 +618,13 @@ private:
             case EVENT_CAMERA_APPROACH_CHECK:
                 if (!_councilCalled && me->GetExactDist(&AodrCouncilShot) <= AodrSummonCouncilAtYd)
                     CallCouncil(player);
+                // Arrived (MovementInform's end of the flight; this in case the spline ended without it)
+                if (!_councilStarted && !me->isMoving() && me->GetExactDist(&AodrCouncilShot) <= 2.0f)
+                {
+                    _councilStarted = true;
+                    StartCouncil();
+                    break;
+                }
                 _events.ScheduleEvent(EVENT_CAMERA_APPROACH_CHECK, 250ms);
                 break;
             case EVENT_COUNCIL_BUTT:
@@ -751,7 +760,7 @@ private:
         lift.m_positionZ = std::max(lift.GetPositionZ() + 30.0f, 230.0f);
         corners.push_back(lift);
         corners.insert(corners.end(), std::begin(AodrApproach), std::end(AodrApproach));
-        Fly(corners.data(), corners.data() + corners.size(), 6.0f);
+        Fly(corners.data(), corners.data() + corners.size(), 0.0f, 10.0f);
 
         _events.ScheduleEvent(EVENT_CAMERA_APPROACH_CHECK, 250ms);
     }
@@ -1030,7 +1039,7 @@ private:
     bool _started;
     bool _done;
     bool _changingSeat;
-    bool _bot;
+    bool _noScene;
     bool _councilCalled;
     bool _councilStarted = false;
     bool _riderHidden = false;
@@ -1066,6 +1075,8 @@ struct npc_bs_obsidian_cloaked_dragon : public VehicleAI
         _playerGUID = player->GetGUID();
         _fromCutscene = me->GetUInt32Value(UNIT_FIELD_CREATED_BY_SPELL) == SPELL_AODR_SUMMON_DRAGON;
         me->SetReactState(REACT_PASSIVE);
+        // 90069's dragon appears 100 yd above the ground: held in the air with the Fly animation (C45) until he is seated
+        me->SetFlying(true);
         me->CastSpell(me, SPELL_OBSIDIAN_CLOAKED_DRAGON_FLIGHT, true);
 
         // The summon seats him at once (vehicle summon); should that not have happened, the dragon goes
@@ -1097,11 +1108,12 @@ struct npc_bs_obsidian_cloaked_dragon : public VehicleAI
             // Not in the cutscene's phase (the summon copied it; 90069 then ends it on the player)
             me->SetPhased(341, true, false);
 
-            // The flight for the controlling client (see above)
+            // The flight for the controlling client (see above). Gravity off first: taking 90071 off a unit with gravity would
+            // start a fall (AuraEffect::HandleAuraAllowFlight -> MoveFall) under the rider
+            me->SetFlying(true);
             me->RemoveAurasDueToSpell(SPELL_OBSIDIAN_CLOAKED_DRAGON_FLIGHT);
             me->CastSpell(me, SPELL_OBSIDIAN_CLOAKED_DRAGON_FLIGHT, true);
             me->SetAlwaysAllowPitching(true);
-            me->SetFlying(true);
 
             if (_fromCutscene && !_revealStarted)
             {
