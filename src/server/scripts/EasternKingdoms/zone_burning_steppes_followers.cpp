@@ -298,7 +298,13 @@ struct npc_burning_steppes_follower : public ScriptedAI
         if (!_info || !_info->Talks || _talkCooldown)
             return;
 
-        Talk(SAY_FOLLOWER_AGGRO);
+        // Personal to his owner (creature_text TextRange 5): text reaches players who cannot see the speaker, and another player
+        // at another stage, or of the other faction, has no Keeshan or Ariok of his own here
+        Player* owner = GetOwnerPlayer();
+        if (!owner)
+            return;
+
+        Talk(SAY_FOLLOWER_AGGRO, owner);
         _talkCooldown = urand(10, 20) * IN_MILLISECONDS;
     }
 
