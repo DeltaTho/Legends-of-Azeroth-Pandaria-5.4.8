@@ -29,6 +29,9 @@ EndScriptData */
 #include "GameObjectAI.h"
 #include "Player.h"
 #include "Random.h"
+#include "SpellScript.h"
+#include "MotionMaster.h"
+#include "ObjectAccessor.h"
 #include "GameTime.h"
 #include <unordered_map>
 
@@ -596,6 +599,501 @@ struct go_burning_steppes_blackrock_boots : public GameObjectAI
     }
 };
 
+/* Strategic Cuts (28246 / 28434): the Razor-Sharp Scorpid Barb 89447 (a bare DUMMY, 7 yd) on the three marks.
+   What the player sees (wiki 28246 notes; 28434 [+9] bum805, [+7]; 48100 [+8]; 48099 [+11] Zuljid; 9176 2011-02-06 [+19] Daniera,
+   reply [+5] Mazik90; 28246 [+0] 285564):
+   - Voodooist Timan 48100 atop the Pillar of Ash: yells "OW, MON!", hexes the stabber, yells "HEX YOU! HEX YOU! HEX YOU!" and falls
+     off the tower to his death.
+   - Worgmistress Othana 48099 in the worg pens berates her worgs now and then (five lines). Stabbed: "Ahh! I... I can't move!", the
+     worgs close in, "No... no... get them away from me!", "NO! AHHHHHHH!!!!" and she is eaten alive.
+   - Gorlop 9176 runs between two lava pools on the south side: at each "This lava hot.", a few seconds, "Gorlop wonder if other lava
+     hot?", and off to the other. The barb works only while he stands at a pool ("Invalid target" otherwise); then "OWIE! GORLOP
+     CAN'T MOVE! GORLOP GONNA FALL!" and he jumps into the lava and dies.
+   Killing them the normal way (disguise off) still counts (kill credit by entry).
+   Ours: C++ in place of their SmartAI (their combat spells and timers are carried over as they were); credit for the stabber and
+   his group in reach, as a kill would give (a scripted death has no loot recipient); the barb refused ("Invalid target") on anything
+   but a ready mark, which also covers Gorlop away from a pool; timings; Timan's landing point (-8086.7, -1867.9, 133.1), 15 yd north
+   of the platform where the vmap shows open ground below; Gorlop's pools: the west one is his TDB spawn (= wiki 39.9, 60.5), the
+   east one wiki 43.9, 60.1 at terrain height; he faces west at the west pool (TDB orientation) and east at the east one, and jumps
+   3 yd ahead; the worgs walk to Othana, bite for three seconds and walk home; scenes run once per life. */
+enum StrategicCuts
+{
+    SPELL_RAZOR_SHARP_SCORPID_BARB  = 89447,
+
+    NPC_GORLOP                      = 9176,
+    NPC_WORGMISTRESS_OTHANA         = 48099,
+    NPC_VOODOOIST_TIMAN             = 48100,
+    NPC_BLACKROCK_WORG              = 7055,
+
+    DATA_BARB_READY                 = 1,
+    POINT_MARK_FALL                 = 1,
+    POINT_GORLOP_WEST_POOL          = 2,
+    POINT_GORLOP_EAST_POOL          = 3,
+    POINT_WORG_TO_OTHANA            = 4,
+
+    // Timan
+    SPELL_TIMAN_HEX                 = 89459,
+    SPELL_TIMAN_SHRINK              = 15802,
+    SPELL_TIMAN_DRAIN_LIFE          = 17173,
+    SPELL_TIMAN_POISON_BOLT         = 21067,
+    SAY_TIMAN_OW_MON                = 0,    // 48328 yell
+    SAY_TIMAN_HEX_YOU               = 1,    // 48329 yell
+    EVENT_TIMAN_HEX                 = 1,
+    EVENT_TIMAN_SHRINK,
+    EVENT_TIMAN_DRAIN_LIFE,
+    EVENT_TIMAN_POISON_BOLT,
+
+    // Othana
+    SAY_OTHANA_WHIP                 = 0,    // 48319-48323
+    SAY_OTHANA_CANT_MOVE            = 1,    // 48325
+    SAY_OTHANA_GET_THEM_AWAY        = 2,    // 48326
+    SAY_OTHANA_NO                   = 3,    // 48327 yell
+
+    // Gorlop
+    SPELL_GORLOP_GROUND_SMASH       = 12734,
+    SPELL_GORLOP_KNOCK_AWAY         = 10101,
+    SPELL_GORLOP_THRASH             = 12787,
+    SAY_GORLOP_THIS_LAVA_HOT        = 0,    // 48334
+    SAY_GORLOP_OTHER_LAVA           = 1,    // 48335
+    SAY_GORLOP_GONNA_FALL           = 2,    // 48330 yell
+    EVENT_GORLOP_GROUND_SMASH       = 1,
+    EVENT_GORLOP_KNOCK_AWAY,
+    EVENT_GORLOP_THRASH,
+};
+
+Position const TimanFallPos         = { -8086.7f, -1867.9f, 133.1f };
+Position const GorlopWestPoolPos    = { -8258.11f, -1727.39f, 140.665f, 1.817f };
+Position const GorlopEastPoolPos    = { -8247.5f, -1848.4f, 144.11f, 4.959f };
+
+// Shared by the three marks: one scene per life, started by the barb, the credit for the stabber and his group.
+struct npc_burning_steppes_strategic_mark : public customCreatureAI
+{
+    npc_burning_steppes_strategic_mark(Creature* creature) : customCreatureAI(creature) { }
+
+    TaskScheduler scheduler;
+    bool inScene = false;
+    ObjectGuid stabberGUID;
+
+    virtual bool IsBarbReady() const { return true; }
+    virtual void StartScene(Player* stabber) = 0;
+
+    uint32 GetData(uint32 type) const override
+    {
+        if (type == DATA_BARB_READY)
+            return (!inScene && me->IsAlive() && IsBarbReady()) ? 1 : 0;
+        return 0;
+    }
+
+    void Reset() override
+    {
+        events.Reset();
+        scheduler.CancelAll();
+        inScene = false;
+        stabberGUID = ObjectGuid::Empty;
+        me->SetReactState(REACT_AGGRESSIVE);
+    }
+
+    void SpellHit(Unit* caster, SpellInfo const* spellInfo) override
+    {
+        if (spellInfo->Id != SPELL_RAZOR_SHARP_SCORPID_BARB || inScene || !me->IsAlive())
+            return;
+
+        Player* stabber = caster ? caster->ToPlayer() : nullptr;
+        if (!stabber)
+            return;
+
+        inScene = true;
+        stabberGUID = stabber->GetGUID();
+        events.Reset();
+        scheduler.CancelAll();
+        me->InterruptNonMeleeSpells(false);
+        me->SetReactState(REACT_PASSIVE);
+        me->AttackStop();
+        me->StopMoving();
+        TC_LOG_DEBUG("scripts", "Burning Steppes: %s stabbed by player %u, scene starts", me->GetName().c_str(), stabber->GetGUID().GetCounter());
+        StartScene(stabber);
+    }
+
+    // An undisguised stabber is in combat with the mark: it stays put, passive, until its scene ends.
+    void EnterEvadeMode(EvadeReason why) override
+    {
+        if (inScene)
+            return;
+        customCreatureAI::EnterEvadeMode(why);
+    }
+
+    void CreditAndDie()
+    {
+        if (!me->IsAlive())
+            return;
+        if (Player* stabber = ObjectAccessor::GetPlayer(*me, stabberGUID))
+            stabber->RewardPlayerAndGroupAtEvent(me->GetEntry(), me);
+        me->Kill(me);
+    }
+};
+
+// Voodooist Timan 48100
+struct npc_burning_steppes_voodooist_timan : public npc_burning_steppes_strategic_mark
+{
+    npc_burning_steppes_voodooist_timan(Creature* creature) : npc_burning_steppes_strategic_mark(creature) { }
+
+    void JustEngagedWith(Unit* /*who*/) override
+    {
+        events.ScheduleEvent(EVENT_TIMAN_POISON_BOLT, 0);
+        events.ScheduleEvent(EVENT_TIMAN_SHRINK, 5 * IN_MILLISECONDS);
+        events.ScheduleEvent(EVENT_TIMAN_HEX, 9 * IN_MILLISECONDS);
+        events.ScheduleEvent(EVENT_TIMAN_DRAIN_LIFE, 1 * IN_MILLISECONDS);
+    }
+
+    void StartScene(Player* stabber) override
+    {
+        Talk(SAY_TIMAN_OW_MON, stabber);
+        scheduler
+            .Schedule(Milliseconds(1500), [this](TaskContext /*context*/)
+            {
+                // Whether a triggered Hex lands on a player the disguise makes friendly is open (dossier S2 unknown 3); the line
+                // comes either way.
+                if (Player* stabber = ObjectAccessor::GetPlayer(*me, stabberGUID))
+                    me->CastSpell(stabber, SPELL_TIMAN_HEX, true);
+                Talk(SAY_TIMAN_HEX_YOU);
+            })
+            .Schedule(Milliseconds(3500), [this](TaskContext /*context*/)
+            {
+                me->GetMotionMaster()->Clear();
+                me->GetMotionMaster()->MoveJump(TimanFallPos, 10.0f, 6.0f, POINT_MARK_FALL);
+            })
+            .Schedule(Milliseconds(9000), [this](TaskContext /*context*/)
+            {
+                CreditAndDie(); // the landing did not report
+            });
+    }
+
+    void MovementInform(uint32 type, uint32 pointId) override
+    {
+        if (type == EFFECT_MOTION_TYPE && pointId == POINT_MARK_FALL && inScene)
+            CreditAndDie();
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        scheduler.Update(diff);
+
+        if (inScene || !UpdateVictim())
+            return;
+
+        events.Update(diff);
+
+        if (me->HasUnitState(UNIT_STATE_CASTING))
+            return;
+
+        while (uint32 eventId = events.ExecuteEvent())
+        {
+            switch (eventId)
+            {
+                case EVENT_TIMAN_POISON_BOLT:
+                    DoCastVictim(SPELL_TIMAN_POISON_BOLT);
+                    events.ScheduleEvent(EVENT_TIMAN_POISON_BOLT, urand(3400, 4700));
+                    break;
+                case EVENT_TIMAN_SHRINK:
+                    DoCastVictim(SPELL_TIMAN_SHRINK);
+                    events.ScheduleEvent(EVENT_TIMAN_SHRINK, urand(27000, 32000));
+                    break;
+                case EVENT_TIMAN_HEX:
+                    if (Unit* target = SelectTarget(SELECT_TARGET_RANDOM, 0, 30.0f, true))
+                        DoCast(target, SPELL_TIMAN_HEX);
+                    events.ScheduleEvent(EVENT_TIMAN_HEX, urand(24000, 27000));
+                    break;
+                case EVENT_TIMAN_DRAIN_LIFE:
+                    if (HealthBelowPct(40))
+                    {
+                        DoCastVictim(SPELL_TIMAN_DRAIN_LIFE);
+                        events.ScheduleEvent(EVENT_TIMAN_DRAIN_LIFE, urand(22000, 25000));
+                    }
+                    else
+                        events.ScheduleEvent(EVENT_TIMAN_DRAIN_LIFE, 1 * IN_MILLISECONDS);
+                    break;
+                default:
+                    break;
+            }
+        }
+
+        DoMeleeAttackIfReady();
+    }
+};
+
+// Worgmistress Othana 48099
+struct npc_burning_steppes_worgmistress_othana : public npc_burning_steppes_strategic_mark
+{
+    npc_burning_steppes_worgmistress_othana(Creature* creature) : npc_burning_steppes_strategic_mark(creature) { }
+
+    std::vector<ObjectGuid> worgGUIDs;
+    uint32 whipTimer = 0;
+
+    void Reset() override
+    {
+        npc_burning_steppes_strategic_mark::Reset();
+        me->SetControlled(false, UNIT_STATE_ROOT);
+        me->SetUInt32Value(UNIT_FIELD_NPC_EMOTESTATE, 0);
+        worgGUIDs.clear();
+        whipTimer = urand(5000, 20000);
+    }
+
+    void StartScene(Player* stabber) override
+    {
+        me->SetControlled(true, UNIT_STATE_ROOT);
+        me->SetUInt32Value(UNIT_FIELD_NPC_EMOTESTATE, EMOTE_STATE_STUN);
+        Talk(SAY_OTHANA_CANT_MOVE, stabber);
+
+        // Her own worgs close in; one already fighting someone stays in its fight.
+        std::list<Creature*> worgs;
+        GetCreatureListWithEntryInGrid(worgs, me, NPC_BLACKROCK_WORG, 20.0f);
+        worgGUIDs.clear();
+        for (Creature* worg : worgs)
+        {
+            if (!worg->IsAlive() || worg->IsInCombat())
+                continue;
+            float angle = me->GetAngle(worg);
+            Position pos = me->GetPosition();
+            pos.m_positionX += 2.5f * std::cos(angle);
+            pos.m_positionY += 2.5f * std::sin(angle);
+            worg->UpdateGroundPositionZ(pos.m_positionX, pos.m_positionY, pos.m_positionZ);
+            worg->SetWalk(false);
+            worg->GetMotionMaster()->MovePoint(POINT_WORG_TO_OTHANA, pos);
+            worgGUIDs.push_back(worg->GetGUID());
+        }
+
+        scheduler
+            .Schedule(Seconds(3), [this](TaskContext /*context*/)
+            {
+                Talk(SAY_OTHANA_GET_THEM_AWAY);
+                WorgsBite();
+            })
+            .Schedule(Seconds(4), [this](TaskContext /*context*/) { WorgsBite(); })
+            .Schedule(Seconds(5), [this](TaskContext /*context*/) { WorgsBite(); })
+            .Schedule(Seconds(6), [this](TaskContext /*context*/)
+            {
+                Talk(SAY_OTHANA_NO);
+                WorgsBite();
+            })
+            .Schedule(Seconds(7), [this](TaskContext /*context*/)
+            {
+                WorgsBite();
+                SendWorgsHome();
+                CreditAndDie();
+            });
+    }
+
+    void WorgsBite()
+    {
+        for (ObjectGuid const& guid : worgGUIDs)
+            if (Creature* worg = ObjectAccessor::GetCreature(*me, guid))
+                if (worg->IsAlive() && !worg->IsInCombat())
+                {
+                    worg->SetFacingToObject(me);
+                    worg->HandleEmoteCommand(EMOTE_ONESHOT_ATTACK1H);
+                }
+    }
+
+    void SendWorgsHome()
+    {
+        for (ObjectGuid const& guid : worgGUIDs)
+            if (Creature* worg = ObjectAccessor::GetCreature(*me, guid))
+                if (worg->IsAlive() && !worg->IsInCombat())
+                {
+                    worg->SetWalk(true);
+                    worg->GetMotionMaster()->MoveTargetedHome();
+                }
+        worgGUIDs.clear();
+    }
+
+    void JustDied(Unit* /*killer*/) override
+    {
+        SendWorgsHome();
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        scheduler.Update(diff);
+
+        if (inScene)
+            return;
+
+        if (!me->IsInCombat())
+        {
+            if (whipTimer <= diff)
+            {
+                Talk(SAY_OTHANA_WHIP);
+                whipTimer = urand(20000, 40000);
+            }
+            else
+                whipTimer -= diff;
+        }
+
+        if (!UpdateVictim())
+            return;
+
+        DoMeleeAttackIfReady();
+    }
+};
+
+// Gorlop 9176
+struct npc_burning_steppes_gorlop : public npc_burning_steppes_strategic_mark
+{
+    npc_burning_steppes_gorlop(Creature* creature) : npc_burning_steppes_strategic_mark(creature) { }
+
+    bool atPool = false;
+
+    bool IsBarbReady() const override { return atPool && !me->IsInCombat(); }
+
+    void Reset() override
+    {
+        npc_burning_steppes_strategic_mark::Reset();
+        me->SetControlled(false, UNIT_STATE_ROOT);
+        atPool = false;
+        // A fresh spawn starts here; after an evade JustReachedHome starts the round.
+        scheduler.Schedule(Seconds(2), [this](TaskContext /*context*/)
+        {
+            if (!me->HasUnitState(UNIT_STATE_EVADE) && !me->IsInCombat())
+                RunTo(POINT_GORLOP_WEST_POOL);
+        });
+    }
+
+    void JustReachedHome() override
+    {
+        RunTo(POINT_GORLOP_WEST_POOL);
+    }
+
+    void RunTo(uint32 pointId)
+    {
+        atPool = false;
+        me->SetWalk(false);
+        me->GetMotionMaster()->MovePoint(pointId, pointId == POINT_GORLOP_WEST_POOL ? GorlopWestPoolPos : GorlopEastPoolPos);
+    }
+
+    void MovementInform(uint32 type, uint32 pointId) override
+    {
+        if (type == EFFECT_MOTION_TYPE && pointId == POINT_MARK_FALL && inScene)
+        {
+            CreditAndDie();
+            return;
+        }
+
+        if (type != POINT_MOTION_TYPE || inScene || (pointId != POINT_GORLOP_WEST_POOL && pointId != POINT_GORLOP_EAST_POOL))
+            return;
+
+        atPool = true;
+        me->SetFacingTo(pointId == POINT_GORLOP_WEST_POOL ? GorlopWestPoolPos.GetOrientation() : GorlopEastPoolPos.GetOrientation());
+        Talk(SAY_GORLOP_THIS_LAVA_HOT);
+        uint32 next = pointId == POINT_GORLOP_WEST_POOL ? POINT_GORLOP_EAST_POOL : POINT_GORLOP_WEST_POOL;
+        scheduler
+            .Schedule(Seconds(6), [this](TaskContext /*context*/)
+            {
+                Talk(SAY_GORLOP_OTHER_LAVA);
+            })
+            .Schedule(Seconds(8), [this, next](TaskContext /*context*/)
+            {
+                RunTo(next);
+            });
+    }
+
+    void JustEngagedWith(Unit* /*who*/) override
+    {
+        atPool = false;
+        scheduler.CancelAll();
+        events.ScheduleEvent(EVENT_GORLOP_GROUND_SMASH, urand(10100, 12000));
+        events.ScheduleEvent(EVENT_GORLOP_KNOCK_AWAY, urand(17300, 20800));
+        events.ScheduleEvent(EVENT_GORLOP_THRASH, urand(4800, 18800));
+    }
+
+    void StartScene(Player* stabber) override
+    {
+        atPool = false;
+        me->GetMotionMaster()->Clear();
+        me->SetControlled(true, UNIT_STATE_ROOT);
+        Talk(SAY_GORLOP_GONNA_FALL, stabber);
+        scheduler
+            .Schedule(Milliseconds(2000), [this](TaskContext /*context*/)
+            {
+                me->SetControlled(false, UNIT_STATE_ROOT);
+                Position pos = me->GetNearPosition(3.0f, 0.0f);
+                me->GetMotionMaster()->MoveJump(pos, 6.0f, 6.0f, POINT_MARK_FALL);
+            })
+            .Schedule(Milliseconds(6000), [this](TaskContext /*context*/)
+            {
+                CreditAndDie(); // the landing did not report
+            });
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        scheduler.Update(diff);
+
+        if (inScene || !UpdateVictim())
+            return;
+
+        events.Update(diff);
+
+        if (me->HasUnitState(UNIT_STATE_CASTING))
+            return;
+
+        while (uint32 eventId = events.ExecuteEvent())
+        {
+            switch (eventId)
+            {
+                case EVENT_GORLOP_GROUND_SMASH:
+                    DoCast(me, SPELL_GORLOP_GROUND_SMASH);
+                    events.ScheduleEvent(EVENT_GORLOP_GROUND_SMASH, urand(18900, 23400));
+                    break;
+                case EVENT_GORLOP_KNOCK_AWAY:
+                    DoCastVictim(SPELL_GORLOP_KNOCK_AWAY);
+                    events.ScheduleEvent(EVENT_GORLOP_KNOCK_AWAY, urand(38600, 44300));
+                    break;
+                case EVENT_GORLOP_THRASH:
+                    DoCast(me, SPELL_GORLOP_THRASH);
+                    events.ScheduleEvent(EVENT_GORLOP_THRASH, urand(7300, 12100));
+                    break;
+                default:
+                    break;
+            }
+        }
+
+        DoMeleeAttackIfReady();
+    }
+};
+
+// 89447 Razor-Sharp Scorpid Barb: only on a mark that is ready for its scene ("Invalid target" otherwise, as retail on Gorlop)
+class spell_burning_steppes_scorpid_barb : public SpellScript
+{
+    PrepareSpellScript(spell_burning_steppes_scorpid_barb);
+
+    SpellCastResult CheckTarget()
+    {
+        Creature* target = GetExplTargetUnit() ? GetExplTargetUnit()->ToCreature() : nullptr;
+        if (!target || !target->IsAlive())
+            return SPELL_FAILED_BAD_TARGETS;
+
+        switch (target->GetEntry())
+        {
+            case NPC_GORLOP:
+            case NPC_WORGMISTRESS_OTHANA:
+            case NPC_VOODOOIST_TIMAN:
+                break;
+            default:
+                return SPELL_FAILED_BAD_TARGETS;
+        }
+
+        if (!target->IsAIEnabled || !target->AI()->GetData(DATA_BARB_READY))
+            return SPELL_FAILED_BAD_TARGETS;
+
+        return SPELL_CAST_OK;
+    }
+
+    void Register() override
+    {
+        OnCheckCast += SpellCheckCastFn(spell_burning_steppes_scorpid_barb::CheckTarget);
+    }
+};
+
 void AddSC_burning_steppes()
 {
     new creature_script<npc_burning_steppes_war_reaver>("npc_burning_steppes_war_reaver");
@@ -604,4 +1102,8 @@ void AddSC_burning_steppes()
     RegisterGameObjectAI(go_burning_steppes_tailors_table);
     RegisterCreatureAI(npc_burning_steppes_thelaron_direneedle);
     RegisterGameObjectAI(go_burning_steppes_blackrock_boots);
+    RegisterCreatureAI(npc_burning_steppes_voodooist_timan);
+    RegisterCreatureAI(npc_burning_steppes_worgmistress_othana);
+    RegisterCreatureAI(npc_burning_steppes_gorlop);
+    RegisterSpellScript(spell_burning_steppes_scorpid_barb);
 }
