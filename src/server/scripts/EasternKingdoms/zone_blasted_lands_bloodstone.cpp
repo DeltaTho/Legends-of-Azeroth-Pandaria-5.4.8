@@ -324,8 +324,172 @@ private:
     bool _detached = false;
 };
 
+/* Shadowsworn Obstructor 41191, summoned round the altar by Loramus' Body (77092 / 77115 / 77116 / 77118 / 77120, 180 s).
+   What the player sees (25688 2010-12-19 [+71] and replies, 2011-02-19 [+2], 2011-04-24, 2011-05-25 [+1], 2011-01-13 [-1]): they
+   channel green lightning at the body and keep moving about; a player who comes near, mounted or not, pulls them off the body and
+   they chase him round the platform; attacked, they stop channelling and fight.
+   Sourced: the channel's timers (first after 2-4.5 s, then every 18-19 s) and the in-combat Disrupt Ritual on the victim, as the
+   SmartAI row both TDBs have. Ours: the wander between channels to points within 4 yd of the summon spot (anchored there, so they
+   never drift); the pull range while they work for the body: 5 yd instead of the aggro radius (~20 yd at equal level, 18-22 for
+   levels 54-58). The nearest summon spot (77092, north) is 15.4 yd from the altar, so with the default radius a player standing at
+   the altar to click it pulled the first wave before it ever channelled; at 5 yd a player within 5 yd of the altar's centre and an
+   Obstructor wandered 4 yd towards it are still 6.4 yd apart, while riding or running over them (the sources' tactic) pulls them.
+   Back to channelling after an evade; gone as soon as the body is gone (the body also despawns them on success and on death). A
+   static or GM-spawned Obstructor (no body) is a plain mob. */
+enum ShadowswornObstructor
+{
+    EVENT_OBSTRUCTOR_CHANNEL        = 1,
+    EVENT_OBSTRUCTOR_WANDER,
+    EVENT_OBSTRUCTOR_CHECK_BODY,
+    EVENT_OBSTRUCTOR_DISRUPT,
+
+    POINT_OBSTRUCTOR_WANDER         = 1,
+};
+
+static float const OBSTRUCTOR_PULL_RANGE = 5.0f;
+static float const OBSTRUCTOR_WANDER_RADIUS = 4.0f;
+
+struct npc_blasted_lands_shadowsworn_obstructor : public ScriptedAI
+{
+    npc_blasted_lands_shadowsworn_obstructor(Creature* creature) : ScriptedAI(creature) { }
+
+    void IsSummonedBy(Unit* summoner) override
+    {
+        if (summoner && summoner->GetEntry() == NPC_LORAMUS_BODY)
+            _bodyGUID = summoner->GetGUID();
+        _anchor = me->GetPosition();
+        ScheduleRitualWork();
+    }
+
+    // Also after an evade (CreatureAI::EnterEvadeMode): back to the body once home
+    void Reset() override
+    {
+        _combatEvents.Reset();
+        ScheduleRitualWork();
+    }
+
+    // While it works for the body, only a unit within 5 yd pulls it (see above); damage and assistance still engage it as usual
+    void MoveInLineOfSight(Unit* who) override
+    {
+        if (_bodyGUID && !me->IsInCombat() && !me->IsWithinDistInMap(who, OBSTRUCTOR_PULL_RANGE))
+            return;
+
+        ScriptedAI::MoveInLineOfSight(who);
+    }
+
+    void EnterCombat(Unit* /*who*/) override
+    {
+        // Unit::SetInCombatState moves the home position to where a point movement (the wander) was engaged: back to the spot
+        if (_bodyGUID)
+            me->SetHomePosition(_anchor);
+        _ritualEvents.Reset();
+        me->InterruptNonMeleeSpells(false);
+        _combatEvents.ScheduleEvent(EVENT_OBSTRUCTOR_DISRUPT, urand(2000, 4500));
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        if (!UpdateVictim())
+        {
+            UpdateRitualWork(diff);
+            return;
+        }
+
+        _combatEvents.Update(diff);
+        if (me->HasUnitState(UNIT_STATE_CASTING))
+            return;
+
+        while (uint32 eventId = _combatEvents.ExecuteEvent())
+        {
+            if (eventId == EVENT_OBSTRUCTOR_DISRUPT)
+            {
+                DoCastVictim(SPELL_DISRUPT_RITUAL);
+                _combatEvents.ScheduleEvent(EVENT_OBSTRUCTOR_DISRUPT, urand(18000, 19000));
+            }
+        }
+
+        DoMeleeAttackIfReady();
+    }
+
+private:
+    Creature* GetBody() const
+    {
+        Creature* body = _bodyGUID ? ObjectAccessor::GetCreature(*me, _bodyGUID) : nullptr;
+        return body && body->IsAlive() ? body : nullptr;
+    }
+
+    void ScheduleRitualWork()
+    {
+        _ritualEvents.Reset();
+        if (!_bodyGUID)
+            return;
+
+        _ritualEvents.ScheduleEvent(EVENT_OBSTRUCTOR_CHANNEL, urand(2000, 4500));
+        _ritualEvents.ScheduleEvent(EVENT_OBSTRUCTOR_CHECK_BODY, 1000);
+    }
+
+    // Out of combat: channel at the body, wander between channels. The channel does not put either side in combat (the body has
+    // combat disallowed), so a player coming near still pulls them (CreatureAI::MoveInLineOfSight, REACT_AGGRESSIVE).
+    void UpdateRitualWork(uint32 diff)
+    {
+        _ritualEvents.Update(diff);
+        while (uint32 eventId = _ritualEvents.ExecuteEvent())
+        {
+            switch (eventId)
+            {
+                case EVENT_OBSTRUCTOR_CHECK_BODY:
+                    if (!GetBody())
+                    {
+                        me->DespawnOrUnsummon();
+                        return;
+                    }
+                    _ritualEvents.ScheduleEvent(EVENT_OBSTRUCTOR_CHECK_BODY, 1000);
+                    break;
+                case EVENT_OBSTRUCTOR_CHANNEL:
+                {
+                    Creature* body = GetBody();
+                    if (!body)
+                        break;
+                    if (me->HasUnitState(UNIT_STATE_EVADE) || me->HasUnitState(UNIT_STATE_CASTING))
+                    {
+                        _ritualEvents.ScheduleEvent(EVENT_OBSTRUCTOR_CHANNEL, 1000);
+                        break;
+                    }
+                    me->GetMotionMaster()->Clear(false);
+                    me->GetMotionMaster()->MoveIdle();
+                    me->StopMoving();
+                    me->SetFacingToObject(body);
+                    me->CastSpell(body, SPELL_DISRUPT_RITUAL, true);
+                    _ritualEvents.ScheduleEvent(EVENT_OBSTRUCTOR_WANDER, 10500);
+                    _ritualEvents.ScheduleEvent(EVENT_OBSTRUCTOR_WANDER, 14500);
+                    _ritualEvents.ScheduleEvent(EVENT_OBSTRUCTOR_CHANNEL, urand(18000, 19000));
+                    break;
+                }
+                case EVENT_OBSTRUCTOR_WANDER:
+                    // A point within 4 yd of the summon spot, not of where it stands: MoveRandom would
+                    // re-centre on the current spot and let it drift
+                    if (!me->HasUnitState(UNIT_STATE_EVADE) && !me->HasUnitState(UNIT_STATE_CASTING))
+                    {
+                        float x, y, z;
+                        me->GetRandomPoint(_anchor, OBSTRUCTOR_WANDER_RADIUS, x, y, z);
+                        me->GetMotionMaster()->MovePoint(POINT_OBSTRUCTOR_WANDER, x, y, z);
+                    }
+                    break;
+                default:
+                    break;
+            }
+        }
+    }
+
+    EventMap _ritualEvents;
+    EventMap _combatEvents;
+    ObjectGuid _bodyGUID;
+    Position _anchor;
+};
+
 void AddSC_blasted_lands_bloodstone()
 {
     RegisterGameObjectAI(go_blasted_lands_blood_altar);
     RegisterCreatureAI(npc_blasted_lands_loramus_body);
+    RegisterCreatureAI(npc_blasted_lands_shadowsworn_obstructor);
 }
