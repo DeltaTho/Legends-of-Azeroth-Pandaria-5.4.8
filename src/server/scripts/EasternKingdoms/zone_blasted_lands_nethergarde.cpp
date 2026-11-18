@@ -16,8 +16,9 @@
 */
 
 /* ScriptData
-SDName: Blasted Lands, Nethergarde Mines
-SDComment: Quest support: 25681 Some People Just Need Killing (the Inconspicuous Box)
+SDName: Blasted Lands, Nethergarde Mines and the Shattershore
+SDComment: Quest support: 25681 Some People Just Need Killing (the Inconspicuous Box), 25708 Our Fallen Friends (the spirits
+           of the Drowned Gilneans)
 SDCategory: Blasted Lands
 EndScriptData */
 
@@ -33,6 +34,7 @@ EndScriptData */
 #include "Vehicle.h"
 #include "CombatAI.h"
 #include "Map.h"
+#include "MoveSplineInit.h"
 
 /*######
 ## 25681 Some People Just Need Killing: the Inconspicuous Box
@@ -328,9 +330,133 @@ class spell_bl_box_vehicle_trigger : public SpellScript
     }
 };
 
+/*######
+## 25708 Our Fallen Friends: the spirits of the Drowned Gilneans
+##
+## What the player sees (sources: one comment, 2010-11-24 by one user, posted alike on 42249 [+19], 42244 [+8], 42248 [+5] and
+## 42252 [+5]; 2014-06-21 [+4]; the wiki notes; spells 78849 / 78847 / 78848; the spirits' addon auras 33900 Shroud of Death and 78853 Drowned Gilnean
+## Spirit Flight): each Drowned Gilnean Merchant, Sailor or Settler killed (its SmartAI death row casts 78849) releases its spirit
+## in human form, a man from a man and a woman from a woman, in a pillar of light; it waves at the one who killed it and rises
+## into the sky, then is gone. Credit is the kill's own (KillCredit1 42252 on the three).
+## Ours: the wave (the 2010 comment and the wiki note) rather than the bow (the 2014 comment); waving at the player who tagged the corpse, else the nearest
+## player; the rise of 20 yd starting after 1.5 s at 4 yd/s, gone after 8 s.
+######*/
+
+namespace
+{
+enum DrownedGilneans
+{
+    SPELL_SUMMON_DROWNED_GILNEAN_SPIRIT_MALE    = 78847,
+    SPELL_SUMMON_DROWNED_GILNEAN_SPIRIT_FEMALE  = 78848,
+
+    EVENT_SPIRIT_RISE                           = 1,
+    EVENT_SPIRIT_GONE                           = 2,
+};
+
+float const SpiritRiseHeight = 20.0f;
+float const SpiritRiseSpeed = 4.0f;
+}
+
+// 78849 Summon Drowned Gilnean Spirit (Master): two dummies that carry the male (78847, effect 0) and the female (78848, effect 1)
+// summon; the corpse's model decides (creature_model_info.gender). Its effects have no target type, so the hooks run in the hit
+// phase with or without the corpse as target: the guard makes it one spirit per death.
+class spell_bl_summon_drowned_gilnean_spirit : public SpellScript
+{
+    PrepareSpellScript(spell_bl_summon_drowned_gilnean_spirit);
+
+    void HandleDummy(SpellEffIndex effIndex)
+    {
+        PreventHitDefaultEffect(effIndex);
+        if (_summoned)
+            return;
+
+        Unit* caster = GetCaster();
+        if (!caster)
+            return;
+
+        _summoned = true;
+        uint8 gender = GENDER_MALE;
+        if (CreatureModelInfo const* modelInfo = sObjectMgr->GetCreatureModelInfo(caster->GetDisplayId()))
+            gender = modelInfo->gender;
+
+        caster->CastSpell(caster, gender == GENDER_FEMALE ? SPELL_SUMMON_DROWNED_GILNEAN_SPIRIT_FEMALE : SPELL_SUMMON_DROWNED_GILNEAN_SPIRIT_MALE, true);
+    }
+
+    void Register() override
+    {
+        OnEffectHit += SpellEffectFn(spell_bl_summon_drowned_gilnean_spirit::HandleDummy, EFFECT_0, SPELL_EFFECT_DUMMY);
+        OnEffectHit += SpellEffectFn(spell_bl_summon_drowned_gilnean_spirit::HandleDummy, EFFECT_1, SPELL_EFFECT_DUMMY);
+        OnEffectHitTarget += SpellEffectFn(spell_bl_summon_drowned_gilnean_spirit::HandleDummy, EFFECT_0, SPELL_EFFECT_DUMMY);
+        OnEffectHitTarget += SpellEffectFn(spell_bl_summon_drowned_gilnean_spirit::HandleDummy, EFFECT_1, SPELL_EFFECT_DUMMY);
+    }
+
+    bool _summoned = false;
+};
+
+// 42252 / 42253 Drowned Gilnean Spirit: a visual, never in a fight (template immune to both and not selectable). The summon is
+// infinite (duration index 21) and owned by a corpse, so the spirit takes itself away.
+struct npc_bl_drowned_gilnean_spirit : public ScriptedAI
+{
+    npc_bl_drowned_gilnean_spirit(Creature* creature) : ScriptedAI(creature)
+    {
+        me->SetReactState(REACT_PASSIVE);
+    }
+
+    void IsSummonedBy(Unit* summoner) override
+    {
+        Unit* lookAt = nullptr;
+        if (Creature* corpse = summoner ? summoner->ToCreature() : nullptr)
+            lookAt = corpse->GetLootRecipient();
+        if (!lookAt || !lookAt->IsInMap(me) || !me->IsWithinDist(lookAt, 40.0f))
+            lookAt = me->SelectNearestPlayer(40.0f);
+
+        if (lookAt)
+            me->SetFacingToObject(lookAt);
+        me->HandleEmoteCommand(EMOTE_ONESHOT_WAVE);
+
+        _events.ScheduleEvent(EVENT_SPIRIT_RISE, 1500ms);
+        _events.ScheduleEvent(EVENT_SPIRIT_GONE, 8s);
+    }
+
+    void AttackStart(Unit* /*who*/) override { }
+    void MoveInLineOfSight(Unit* /*who*/) override { }
+    void EnterEvadeMode(EvadeReason /*why*/) override { }
+
+    void UpdateAI(uint32 diff) override
+    {
+        _events.Update(diff);
+        while (uint32 eventId = _events.ExecuteEvent())
+        {
+            switch (eventId)
+            {
+                case EVENT_SPIRIT_RISE:
+                {
+                    me->SetDisableGravity(true);
+                    Movement::MoveSplineInit init(me);
+                    init.MoveTo(me->GetPositionX(), me->GetPositionY(), me->GetPositionZ() + SpiritRiseHeight, false);
+                    init.SetFly();
+                    init.SetVelocity(SpiritRiseSpeed);
+                    init.Launch();
+                    break;
+                }
+                case EVENT_SPIRIT_GONE:
+                    me->DespawnOrUnsummon();
+                    return;
+                default:
+                    break;
+            }
+        }
+    }
+
+private:
+    EventMap _events;
+};
+
 void AddSC_blasted_lands_nethergarde()
 {
     RegisterGameObjectAI(go_bl_inconspicuous_box);
     new creature_script<npc_bl_inconspicuous_box>("npc_bl_inconspicuous_box");
     new spell_script<spell_bl_box_vehicle_trigger>("spell_bl_box_vehicle_trigger");
+    new spell_script<spell_bl_summon_drowned_gilnean_spirit>("spell_bl_summon_drowned_gilnean_spirit");
+    new creature_script<npc_bl_drowned_gilnean_spirit>("npc_bl_drowned_gilnean_spirit");
 }
