@@ -1185,6 +1185,35 @@ class spell_burning_steppes_scorpid_barb : public SpellScript
     }
 };
 
+/* 89562 Blackrock Cudgel of Discipline (item 63390; I Am the Law and I Am the Lash 28278 / 28439, Abuse of Power 28279 / 28440).
+   eff0 DAMAGE_FROM_MAX_HEALTH_PCT 25. Sourced: "the Cudgel hits for a quarter of the target's health, and does not have a
+   cooldown" (wiki 28278), so four hits kill a troop at any player level. The core truncated the quarter (1107 of a level 50
+   sergeant's 4430: four hits left 2 health) and reduced it by the troop's armor against the player's level (physical school;
+   about 39 % for a level 49-50 player, about 6 % at 90: seven or five hits), which the spell_custom_attribute row
+   SPELL_ATTR0_CU_IGNORE_ARMOR now stops. Ours: rounding the quarter up. */
+class spell_burning_steppes_blackrock_cudgel : public SpellScript
+{
+    PrepareSpellScript(spell_burning_steppes_blackrock_cudgel);
+
+    void HandleDamage(SpellEffIndex effIndex)
+    {
+        PreventHitDefaultEffect(effIndex);
+
+        Unit* target = GetHitUnit();
+        if (!target)
+            return;
+
+        uint64 maxHealth = target->GetMaxHealth();
+        uint64 pct = uint64(std::max(GetEffectValue(), 0));
+        SetHitDamage(GetHitDamage() + int32((maxHealth * pct + 99) / 100));
+    }
+
+    void Register() override
+    {
+        OnEffectHitTarget += SpellEffectFn(spell_burning_steppes_blackrock_cudgel::HandleDamage, EFFECT_0, SPELL_EFFECT_DAMAGE_FROM_MAX_HEALTH_PCT);
+    }
+};
+
 /* Unmask 89596 (I Am the Law and I Am the Lash 28278 / 28439, Abuse of Power 28279 / 28440; designed with the Black Tooth Hovel).
    Cast by a Blackrock troop on the disguised player who cudgeled it (Blackrock Soldier 7025, Smolderthorn Assassin 48119, Firegut
    Flamespeaker 48121 on a "notice" roll, Blackrock Sergeant 48201 on his first hit: their SmartAI, target = the invoker). An 8 s
@@ -1342,6 +1371,7 @@ void AddSC_burning_steppes()
     RegisterCreatureAI(npc_burning_steppes_worgmistress_othana);
     RegisterCreatureAI(npc_burning_steppes_gorlop);
     RegisterSpellScript(spell_burning_steppes_scorpid_barb);
+    RegisterSpellScript(spell_burning_steppes_blackrock_cudgel);
     new aura_script<spell_burning_steppes_unmask>("spell_burning_steppes_unmask");
     new spell_script<spell_burning_steppes_unmask_effect>("spell_burning_steppes_unmask_effect");
 }
