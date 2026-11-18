@@ -30,6 +30,7 @@ passes will be required to test and validate the alliance's perspective.
 | Western Plaguelands | Merged into `playerbot-beta` |
 | Eastern Plaguelands | Merged into `playerbot-beta` |
 | Badlands | On [`pr/badlands`](../../tree/pr/badlands), not merged yet |
+| Searing Gorge | On [`pr/searing-gorge`](../../tree/pr/searing-gorge), not merged yet |
 
 ## Branches
 
@@ -38,5 +39,7 @@ passes will be required to test and validate the alliance's perspective.
   rewritten from time to time.
 - `fixes`: general fixes outside the region work that are not in `playerbot-beta` yet.
 - `pr/badlands`: the Badlands set.
+- `pr/searing-gorge`: the Searing Gorge set, on top of `pr/badlands` (both add to the same
+  script lists).
 
 Branches of regions that have been merged are removed.
