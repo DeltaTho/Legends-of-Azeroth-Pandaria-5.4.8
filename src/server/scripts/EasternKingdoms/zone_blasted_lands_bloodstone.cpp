@@ -93,6 +93,7 @@ enum AltarOfStorms
     SPELL_SUMMON_OBSTRUCTOR_SE      = 77118,
     SPELL_SUMMON_OBSTRUCTOR_NE      = 77120,
     SPELL_DISRUPT_RITUAL            = 77129,
+    SPELL_LORAMUS_RITUAL_AURA       = 77211,    // template addon aura of the body (dummy, the ritual's look)
 
     // Loramus' Body 41193 creature_text groups
     SAY_BODY_PROTECT                = 0,    // 41144 boss emote
@@ -284,7 +285,19 @@ struct npc_blasted_lands_loramus_body : public ScriptedAI
                     break;
                 case EVENT_BODY_SUCCESS_3:
                     Talk(SAY_BODY_PATH);
-                    _events.ScheduleEvent(EVENT_BODY_DESPAWN, 4000);
+                    _events.ScheduleEvent(EVENT_BODY_WALK_OFF, 2000);
+                    break;
+                case EVENT_BODY_WALK_OFF:
+                    // "he'll leave and head back to the cave" (25688 2011-04-28 [+5]): off the altar and down the ramp on foot,
+                    // gone on arrival (MovementInform). About 48 yd at walking speed (2.5 yd/s): ~20 s; the 40 s despawn only
+                    // catches a walk that never arrives
+                    me->RemoveAurasDueToSpell(SPELL_LORAMUS_RITUAL_AURA);
+                    me->SetDisableGravity(false);
+                    me->SetFall(false); // SetDisableGravity(false) marks a non-flyer falling; NO_MOVE_FLAGS_UPDATE leaves it set
+                    me->SetAnimTier(AnimTier::Ground);
+                    me->SetWalk(true);
+                    me->GetMotionMaster()->MovePoint(POINT_BODY_RAMP, LoramusBodyWalkOff);
+                    _events.ScheduleEvent(EVENT_BODY_DESPAWN, 40000);
                     break;
                 case EVENT_BODY_DESPAWN:
                     me->DespawnOrUnsummon();
