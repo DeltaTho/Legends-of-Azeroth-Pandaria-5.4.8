@@ -18,7 +18,8 @@
 /* ScriptData
 SDName: Blasted Lands, the bloodstone ritual
 SDComment: Quest support: 25688 (Horde) / 26162 (Alliance) The Altar of Storms - the Blood Altar, Loramus' Body and the
-           Shadowsworn Obstructor waves
+           Shadowsworn Obstructor waves; 25695 (Horde) / 26174 (Alliance) Watching Our Back - the walking Portal-Sentries
+           catch a reader of the plans
 SDCategory: Blasted Lands
 EndScriptData */
 
@@ -31,6 +32,10 @@ EndScriptData */
 #include "TemporarySummon.h"
 #include "MotionMaster.h"
 #include "Map.h"
+#include "SpellScript.h"
+#include "SpellAuraEffects.h"
+#include "CreatureTextMgr.h"
+#include "Random.h"
 
 /*######
 ## The Altar of Storms (25688 Horde / 26162 Alliance)
@@ -500,9 +505,132 @@ private:
     Position _anchor;
 };
 
+/*######
+## Watching Our Back (25695 Horde / 26174 Alliance): Caught in the Act
+##
+## What the player sees (sources: comments 25695 2011-12-18 [+677], 2010-11-25 [+126], 2010-12-02 [+95], 2012-01-28 [+17],
+## 2013-08-19 [+6] and reply, 2011-07-18 [-1]; 26174 2010-11-23 [+49], 2011-01-14 [+30], [+29] and replies, 2012-03, 2012-05,
+## 2013-11; the wiki notes; the spells 77360 / 77361 / 77363 / 77364 / 77366 and 77366's spell_target_position; broadcast texts
+## 41206, 41207, 41208, 42246):
+## The player reads the other side's plans (a 10 s "Examining" cast on the plans by the cart / under the tent). Two Portal-Sentries
+## walk a beat round each camp; if one of them faces the reader during the cast, it whispers "Begone, Horde thief!" / "Begone,
+## Alliance thief!" or "Get away from those!" / "What do you think you're doing?", the cast stops and the reader is teleported next
+## to his own commander (no stun, no damage); he can try again at once. A pet in the sentry's view gives its master away (only a
+## combat pet or guardian: not a vanity pet or a totem, ours). Horde
+## readers were also caught by a Horde sentry (2013-08-19 [+6]); standing on the tent roof or on top of the crates hid a reader.
+##
+## Ours (no source says how): only the four walking sentries detect (the comments only speak of the walkers), checked every
+## second (77361's period) for the whole cast; their sight: 20 yd (77360's radius), a 100 degree arc in front, line of sight, and
+## the reader (or his pet) at most 3 yd above the sentry's feet (the roof / crate reports); stealth and invisibility the sentry
+## cannot see through hide the reader; a sentry of the reader's own faction whispers only "Get away from those!" / "What do you
+## think you're doing?".
+##
+## Core notes: 77361 periodically casts 77360, a 4 s stun on every enemy in a cone, with a DUMMY second effect nobody scripts; the
+## sentries are neutral and IMMUNE_TO_PC, so the cone would not pick players anyway. The AuraScript takes over the period instead
+## of the trigger and selects the reader in code.
+######*/
+
+enum CaughtInTheAct
+{
+    SPELL_PORTAL_SENTRY_TRIGGER_AURA = 77361,   // on the four walking sentries (creature_addon)
+    SPELL_EXAMINING                 = 77364,    // the plans' lock spell (lock 1900), 10 s
+    SPELL_TELEPORT_TO_COMMANDERS    = 77366,    // spell_target_position (-11811.8, -3190.42, -30.7075)
+
+    NPC_ALLIANCE_PORTAL_SENTRY      = 41269,
+    NPC_HORDE_PORTAL_SENTRY         = 42301,
+
+    // creature_text of both sentries
+    SAY_SENTRY_BEGONE_THIEF         = 0,        // 41208 "Begone, Horde thief!" (41269) / 42246 "Begone, Alliance thief!" (42301)
+    SAY_SENTRY_CAUGHT               = 1,        // 41206 "Get away from those!" / 41207 "What do you think you're doing?"
+};
+
+static float const SENTRY_SIGHT_RANGE = 20.0f;
+static float const SENTRY_SIGHT_ARC = float(M_PI) * 100.0f / 180.0f;
+static float const SENTRY_SIGHT_MAX_ABOVE = 3.0f;
+
+class spell_blasted_lands_portal_sentry_trigger : public AuraScript
+{
+    PrepareAuraScript(spell_blasted_lands_portal_sentry_trigger);
+
+    static bool IsReadingPlans(Player const* player)
+    {
+        Spell const* spell = player->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+        return spell && spell->GetSpellInfo()->Id == SPELL_EXAMINING;
+    }
+
+    // The reader's combat pet or guardian (a hunter's or warlock's pet, a ghoul, a treant...): not a vanity pet or a totem
+    static bool IsCombatCompanion(Unit const* unit)
+    {
+        if (unit->IsTotem() || !unit->HasUnitTypeMask(UNIT_MASK_GUARDIAN))
+            return false;
+        Creature const* creature = unit->ToCreature();
+        return !creature || creature->GetCreatureType() != CREATURE_TYPE_NON_COMBAT_PET;
+    }
+
+    static bool Sees(Creature const* sentry, Unit const* who)
+    {
+        return who->IsInWorld() && who->IsAlive() && sentry->IsWithinDistInMap(who, SENTRY_SIGHT_RANGE)
+            && sentry->HasInArc(SENTRY_SIGHT_ARC, who)
+            && who->GetPositionZ() - sentry->GetPositionZ() <= SENTRY_SIGHT_MAX_ABOVE
+            && sentry->CanSeeOrDetect(who) && sentry->IsWithinLOSInMap(who);
+    }
+
+    void HandlePeriodic(AuraEffect const* /*aurEff*/)
+    {
+        PreventDefaultAction(); // no 77360 cone stun
+
+        Creature* sentry = GetTarget()->ToCreature();
+        if (!sentry || !sentry->IsAlive() || sentry->IsInCombat())
+            return;
+
+        std::list<Player*> players;
+        sentry->GetPlayerListInGrid(players, SENTRY_SIGHT_RANGE + 40.0f);
+        for (Player* reader : players)
+        {
+            if (!reader->IsAlive() || reader->IsGameMaster() || !IsReadingPlans(reader))
+                continue;
+
+            bool caught = Sees(sentry, reader);
+            if (!caught)
+            {
+                for (Unit* controlled : reader->m_Controlled)
+                {
+                    if (controlled && IsCombatCompanion(controlled) && Sees(sentry, controlled))
+                    {
+                        caught = true;
+                        break;
+                    }
+                }
+            }
+
+            if (caught)
+                Catch(sentry, reader);
+        }
+    }
+
+    static void Catch(Creature* sentry, Player* reader)
+    {
+        bool const otherSide = (sentry->GetEntry() == NPC_ALLIANCE_PORTAL_SENTRY && reader->GetTeam() == HORDE)
+            || (sentry->GetEntry() == NPC_HORDE_PORTAL_SENTRY && reader->GetTeam() == ALLIANCE);
+        uint8 const line = (otherSide && roll_chance_i(50)) ? SAY_SENTRY_BEGONE_THIEF : SAY_SENTRY_CAUGHT;
+
+        reader->InterruptNonMeleeSpells(false);
+        sCreatureTextMgr->SendChat(sentry, line, reader);
+        sentry->CastSpell(reader, SPELL_TELEPORT_TO_COMMANDERS, true);
+        TC_LOG_DEBUG("scripts", "Blasted Lands: Portal-Sentry %u caught player %u reading the plans", sentry->GetDBTableGUIDLow(),
+            reader->GetGUID().GetCounter());
+    }
+
+    void Register() override
+    {
+        OnEffectPeriodic += AuraEffectPeriodicFn(spell_blasted_lands_portal_sentry_trigger::HandlePeriodic, EFFECT_0, SPELL_AURA_PERIODIC_TRIGGER_SPELL);
+    }
+};
+
 void AddSC_blasted_lands_bloodstone()
 {
     RegisterGameObjectAI(go_blasted_lands_blood_altar);
     RegisterCreatureAI(npc_blasted_lands_loramus_body);
     RegisterCreatureAI(npc_blasted_lands_shadowsworn_obstructor);
+    new aura_script<spell_blasted_lands_portal_sentry_trigger>("spell_blasted_lands_portal_sentry_trigger");
 }
