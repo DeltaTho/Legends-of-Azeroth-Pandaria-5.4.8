@@ -19,7 +19,7 @@
 SDName: Blasted Lands, the bloodstone ritual
 SDComment: Quest support: 25688 (Horde) / 26162 (Alliance) The Altar of Storms - the Blood Altar, Loramus' Body and the
            Shadowsworn Obstructor waves; 25695 (Horde) / 26174 (Alliance) Watching Our Back - the walking Portal-Sentries
-           catch a reader of the plans
+           catch a reader of the plans; 25692 / 26165 the Oath-Chained Infernals' Fel Streak
 SDCategory: Blasted Lands
 EndScriptData */
 
@@ -627,10 +627,44 @@ class spell_blasted_lands_portal_sentry_trigger : public AuraScript
     }
 };
 
+/* Oath-Chained Infernal 41253, Fel Streak 84392 (The Vile Blood of Demons 25692 / 26165).
+   What the player sees (comment 25692 2011-03-19 [+4]: the infernals "roll into a ball, roll at you and explode"; the spells): on
+   aggro the infernal casts Fel Streak (1 s), turns into a fel ball for 4 s (eff1, transform 34921), charges at its target (84391,
+   JUMP_DEST to the target's spot, which triggers the missile 84390) and the landing burns everyone within 15 yd of the spot
+   (84390). eff0 is a SCRIPT_EFFECT whose base points name 84391, and nothing handled it: only the ball appeared. Sourced: the spell
+   chain; ours: nothing. */
+enum FelStreak
+{
+    SPELL_FEL_STREAK_CHARGE         = 84391,
+};
+
+class spell_blasted_lands_fel_streak : public SpellScript
+{
+    PrepareSpellScript(spell_blasted_lands_fel_streak);
+
+    bool Validate(SpellInfo const* /*spellInfo*/) override
+    {
+        return ValidateSpellInfo({ SPELL_FEL_STREAK_CHARGE });
+    }
+
+    void HandleScript(SpellEffIndex effIndex)
+    {
+        PreventHitDefaultEffect(effIndex);
+        if (Unit* target = GetHitUnit())
+            GetCaster()->CastSpell(target, SPELL_FEL_STREAK_CHARGE, true);
+    }
+
+    void Register() override
+    {
+        OnEffectHitTarget += SpellEffectFn(spell_blasted_lands_fel_streak::HandleScript, EFFECT_0, SPELL_EFFECT_SCRIPT_EFFECT);
+    }
+};
+
 void AddSC_blasted_lands_bloodstone()
 {
     RegisterGameObjectAI(go_blasted_lands_blood_altar);
     RegisterCreatureAI(npc_blasted_lands_loramus_body);
     RegisterCreatureAI(npc_blasted_lands_shadowsworn_obstructor);
     new aura_script<spell_blasted_lands_portal_sentry_trigger>("spell_blasted_lands_portal_sentry_trigger");
+    new spell_script<spell_blasted_lands_fel_streak>("spell_blasted_lands_fel_streak");
 }
