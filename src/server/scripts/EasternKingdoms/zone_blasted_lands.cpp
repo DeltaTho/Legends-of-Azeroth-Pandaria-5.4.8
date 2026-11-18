@@ -18,24 +18,20 @@
 /* ScriptData
 SDName: Blasted_Lands
 SD%Complete: 90
-SDComment: Quest support: 3628. Teleporter to Rise of the Defiler missing group support.
+SDComment: Quest support: 25701 / 26171 (You Are Rakh'likh, Demon): the Deathly Usher's group teleport.
 SDCategory: Blasted Lands
 EndScriptData */
 
 /* ContentData
-npc_deathly_usher
+spell_blasted_lands_teleport_to_razelikh_group
 EndContentData */
 
 #include "ScriptMgr.h"
 #include "ScriptedCreature.h"
-#include "ScriptedGossip.h"
 #include "Player.h"
-
-/*######
-## npc_deathly_usher
-######*/
-
-#define GOSSIP_ITEM_USHER "I wish to to visit the Rise of the Defiler."
+#include "Group.h"
+#include "SpellMgr.h"
+#include "SpellScript.h"
 
 enum DeathlyUsher
 {
@@ -44,35 +40,46 @@ enum DeathlyUsher
     SPELL_TELEPORT_GROUP                = 27686
 };
 
-class npc_deathly_usher : public CreatureScript
+// 27686 - Teleport to Razelikh (GROUP), cast by the Deathly Usher 8816 on the player who chose "We wish to face the Defiler."
+// (gossip 1541 option 1, TDB SmartAI). Every group member within 20 yd of that player and alive goes up with him (13142); TDB
+// script name, behaviour ported from TCPP spell_razelikh_teleport_group. The spell's second target (37, the target's party) can
+// hit each member: only the hit on the gossiping player acts, so nobody is sent twice
+class spell_blasted_lands_teleport_to_razelikh_group : public SpellScript
 {
-public:
-    npc_deathly_usher() : CreatureScript("npc_deathly_usher") { }
+    PrepareSpellScript(spell_blasted_lands_teleport_to_razelikh_group);
 
-    bool OnGossipSelect(Player* player, Creature* creature, uint32 /*sender*/, uint32 action) override
+    bool Validate(SpellInfo const* /*spellInfo*/) override
     {
-        player->PlayerTalkClass->ClearMenus();
-        if (action == GOSSIP_ACTION_INFO_DEF)
-        {
-            player->CLOSE_GOSSIP_MENU();
-            creature->CastSpell(player, SPELL_TELEPORT_SINGLE, true);
-        }
-
-        return true;
+        return sSpellMgr->GetSpellInfo(SPELL_TELEPORT_SINGLE) && sSpellMgr->GetSpellInfo(SPELL_TELEPORT_SINGLE_IN_GROUP);
     }
 
-    bool OnGossipHello(Player* player, Creature* creature) override
+    void HandleScript(SpellEffIndex effIndex)
     {
-        if (player->GetQuestStatus(3628) == QUEST_STATUS_INCOMPLETE && player->HasItemCount(10757))
-            player->ADD_GOSSIP_ITEM(GOSSIP_ICON_CHAT, GOSSIP_ITEM_USHER, GOSSIP_SENDER_MAIN, GOSSIP_ACTION_INFO_DEF);
+        PreventHitDefaultEffect(effIndex);
+        Player* player = GetHitPlayer();
+        if (!player || (GetExplTargetUnit() && GetExplTargetUnit() != player))
+            return;
 
-        player->SEND_GOSSIP_MENU(player->GetGossipTextId(creature), creature->GetGUID());
+        Group* group = player->GetGroup();
+        if (!group)
+        {
+            player->CastSpell(player, SPELL_TELEPORT_SINGLE, true);
+            return;
+        }
 
-        return true;
+        for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
+            if (Player* member = itr->GetSource())
+                if (member->IsInMap(player) && member->IsAlive() && member->IsWithinDistInMap(player, 20.0f))
+                    member->CastSpell(member, SPELL_TELEPORT_SINGLE_IN_GROUP, true);
+    }
+
+    void Register() override
+    {
+        OnEffectHitTarget += SpellEffectFn(spell_blasted_lands_teleport_to_razelikh_group::HandleScript, EFFECT_0, SPELL_EFFECT_SCRIPT_EFFECT);
     }
 };
 
 void AddSC_blasted_lands()
 {
-    new npc_deathly_usher();
+    new spell_script<spell_blasted_lands_teleport_to_razelikh_group>("spell_blasted_lands_teleport_to_razelikh_group");
 }
