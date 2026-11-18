@@ -128,6 +128,7 @@ enum RiseData
     TALK_LORAMUS_RETURNED               = 0,        // 41232 say
     TALK_LORAMUS_MEMORY                 = 1,        // 41233 say
     TALK_LORAMUS_RAKHLIKH               = 2,        // 41234 yell
+    TALK_LORAMUS_GRIP                   = 3,        // 42291 / 41245 / 42292 yell, random
 
     TALK_RAZELIKH_FOOL                  = 0,        // 41235 yell
     TALK_RAZELIKH_ENOUGH                = 1,        // 41236 yell
@@ -151,6 +152,7 @@ enum RiseData
     ACTION_BEG                          = 11,       // Defiled -> controller: down to 5 %
 
     DATA_KNIFE                          = 1,        // SetGUID on the controller: this player used the knife
+    DATA_TOSSED                         = 2,        // SetGUID on the controller: Flames of Chaos hit this player
 
     EVENT_INTRO_MEMORY                  = 1,
     EVENT_INTRO_RAKHLIKH,
@@ -190,12 +192,34 @@ Position const RiseUsherSide        = { -11112.0f, -2901.0f, 10.75f, 2.47f };   
 float const RiseEventRange          = 60.0f;    // players taking part, and credited
 float const RiseStartRange          = 25.0f;    // a player with the quest this close starts it (the Usher lands him 7 yd away)
 float const RiseCorpseRange         = 80.0f;    // a participant whose corpse lies this close to Loramus died on the Rise
-uint32 const RiseHoldMs             = 10 * MINUTE * IN_MILLISECONDS;    // a held fight resets after this long with nobody back (ours)
+Position const RiseRuneOfReturn     = { -11184.4f, -2834.5f, 117.0f, 0.0f };             // 153359, on the ledge north of the summit
+float const RiseSummitFloorZ        = 152.0f;   // the summit is level at 158; below this a tossed player is off it
+uint32 const RiseTossWindowMs       = 15000;    // after a Flames of Chaos hit, how long Loramus watches for that player's fall:
+                                                // the throw carries a 10 s feather fall (10857), so he drifts down slowly
+uint32 const RiseHoldMs            = 10 * MINUTE * IN_MILLISECONDS;    // a held fight resets after this long with nobody back (ours)
 
 static bool HoldsRakhlikh(Player const* player)
 {
     return player->GetQuestStatus(QUEST_RAKHLIKH_H) == QUEST_STATUS_INCOMPLETE
         || player->GetQuestStatus(QUEST_RAKHLIKH_A) == QUEST_STATUS_INCOMPLETE;
+}
+
+// Flames of Chaos must not throw Loramus off the Rise (comment 785723: he fell and never came back): immune to knockbacks and to
+// the spell itself (ours)
+static void SetKnockbackImmune(Creature* creature)
+{
+    creature->ApplySpellImmune(0, IMMUNITY_EFFECT, SPELL_EFFECT_KNOCK_BACK, false);
+    creature->ApplySpellImmune(0, IMMUNITY_EFFECT, SPELL_EFFECT_KNOCK_BACK, true);
+    creature->ApplySpellImmune(SPELL_FLAMES_OF_CHAOS, IMMUNITY_ID, SPELL_FLAMES_OF_CHAOS, false);
+    creature->ApplySpellImmune(SPELL_FLAMES_OF_CHAOS, IMMUNITY_ID, SPELL_FLAMES_OF_CHAOS, true);
+}
+
+// Loramus is sessile: back home if anything moved him off his spot (ours)
+static void KeepOnSummit(Creature* creature)
+{
+    if (creature->GetPositionZ() < RiseSummitFloorZ || creature->GetExactDist2d(&RiseLoramusHome) > 15.0f)
+        creature->NearTeleportTo(RiseLoramusHome.GetPositionX(), RiseLoramusHome.GetPositionY(), RiseLoramusHome.GetPositionZ(),
+            RiseLoramusHome.GetOrientation());
 }
 
 // Every player within range of the Rise, alive or dead (the grid searchers skip the dead)
@@ -205,6 +229,54 @@ static void GetRisePlayers(Creature* me, float range, std::list<Player*>& player
         if (Player* player = ref.GetSource())
             if (player->IsInWorld() && me->IsWithinDistInMap(player, range))
                 players.push_back(player);
+}
+
+// Razelikh and the Defiled chase players freely over the summit and its upper slopes (level to 15 yd, z 147-156 at 25 yd); drawn
+// further (30 yd out, or below z 140) they are put back on their spot and fight on. They never evade, so kiting them away cannot
+// reset the event (ours)
+static bool OnSummit(WorldObject const* object)
+{
+    return object->GetPositionZ() >= 140.0f && object->GetExactDist2d(&RiseLoramusHome) <= 30.0f;
+}
+
+static void LeashToSummit(Creature* creature, Position const& spot)
+{
+    if (!OnSummit(creature))
+        creature->NearTeleportTo(spot.GetPositionX(), spot.GetPositionY(), spot.GetPositionZ(), spot.GetOrientation());
+}
+
+// Neither demon goes after a target off the summit (a ranged player down the slope would draw him to the leash, back and out again
+// every second): he takes the nearest player on the summit instead, Razelikh else Loramus; with nobody up there the Defiled holds his
+// spot, still in combat (ours). Threat, health and the event are untouched
+static Unit* SelectSummitTarget(Creature* demon, Creature* loramus)
+{
+    std::list<Player*> players;
+    demon->GetPlayerListInGrid(players, 40.0f);
+    Player* best = nullptr;
+    for (Player* player : players)
+        if (OnSummit(player) && !player->IsGameMaster() && demon->IsValidAttackTarget(player)
+            && (!best || demon->GetDistance(player) < demon->GetDistance(best)))
+            best = player;
+    if (best)
+        return best;
+    if (loramus && loramus->IsAlive() && loramus->IsVisible() && demon->IsValidAttackTarget(loramus))
+        return loramus;
+    return nullptr;
+}
+
+static Unit* RedirectOffSummit(Creature* demon, Unit* who, Creature* loramus)
+{
+    if (!who || OnSummit(who))
+        return who;
+
+    who = SelectSummitTarget(demon, loramus);
+    if (!who && demon->GetVictim())
+    {
+        demon->AttackStop();
+        demon->GetMotionMaster()->Clear();
+        demon->GetMotionMaster()->MoveIdle();
+    }
+    return who;
 }
 
 static Creature* GetRiseController(Creature* summon)
@@ -294,6 +366,12 @@ struct npc_blasted_lands_razelikh : public ScriptedAI
 
     void EnterEvadeMode(EvadeReason /*why*/) override { }
 
+    void AttackStart(Unit* who) override
+    {
+        if (Unit* target = RedirectOffSummit(me, who, GetRiseController(me)))
+            ScriptedAI::AttackStart(target);
+    }
+
     void JustSummoned(Creature* summon) override
     {
         if (summon->GetEntry() != NPC_DEFILED_FELHOUND)
@@ -308,6 +386,13 @@ struct npc_blasted_lands_razelikh : public ScriptedAI
     void SummonedCreatureDespawn(Creature* summon) override
     {
         _hounds.Despawn(summon);
+    }
+
+    void SpellHitTarget(Unit* target, SpellInfo const* spell) override
+    {
+        if (spell->Id == SPELL_FLAMES_OF_CHAOS && target->GetTypeId() == TYPEID_PLAYER)
+            if (Creature* controller = GetRiseController(me))
+                controller->AI()->SetGUID(target->GetGUID(), DATA_TOSSED);
     }
 
     void UpdateAI(uint32 diff) override
@@ -389,6 +474,7 @@ struct npc_blasted_lands_loramus_defiled : public ScriptedAI
     void IsSummonedBy(Unit* /*summoner*/) override
     {
         me->setRegeneratingHealth(false);
+        SetKnockbackImmune(me);
         Stop();
     }
 
@@ -482,6 +568,13 @@ struct npc_blasted_lands_loramus_defiled : public ScriptedAI
 
     void EnterEvadeMode(EvadeReason /*why*/) override { }
 
+    // Loramus is hidden in this phase, so with nobody on the summit the Defiled holds his spot
+    void AttackStart(Unit* who) override
+    {
+        if (Unit* target = RedirectOffSummit(me, who, nullptr))
+            ScriptedAI::AttackStart(target);
+    }
+
     void UpdateAI(uint32 /*diff*/) override
     {
         if (!_engaged || _begging || _sealed || !UpdateVictim())
@@ -509,6 +602,7 @@ struct npc_blasted_lands_loramus_rise : public ScriptedAI
 
     void Reset() override
     {
+        SetKnockbackImmune(me);
         _volleyTimer = urand(12000, 18000);
         if (_state == RISE_IDLE)
             me->SetReactState(REACT_PASSIVE);
@@ -565,6 +659,13 @@ struct npc_blasted_lands_loramus_rise : public ScriptedAI
 
     void SetGUID(ObjectGuid guid, int32 type) override
     {
+        if (type == DATA_TOSSED)
+        {
+            if (_state == RISE_PHASE_1)
+                _tossed[guid] = RiseTossWindowMs;
+            return;
+        }
+
         if (type != DATA_KNIFE || _state != RISE_BEGGING)
             return;
 
@@ -601,6 +702,15 @@ struct npc_blasted_lands_loramus_rise : public ScriptedAI
         }
         else
             _scanTimer -= diff;
+
+        _gripCooldown = _gripCooldown > diff ? _gripCooldown - diff : 0;
+        if (_gripTimer <= diff)
+        {
+            Grip(500 + (diff - _gripTimer));
+            _gripTimer = 500;
+        }
+        else
+            _gripTimer -= diff;
 
         if (_state != RISE_PHASE_1 || _held || !UpdateVictim())
             return;
@@ -670,6 +780,12 @@ private:
     {
         if (_state != RISE_FALLEN)
             KeepResolve();
+
+        KeepOnSummit(me);
+        if (Creature* razelikh = GetRazelikh())
+            LeashToSummit(razelikh, RiseRazelikhSpawn);
+        if (Creature* defiled = GetDefiled())
+            LeashToSummit(defiled, RiseLoramusHome);
 
         std::list<Player*> players;
         me->GetPlayerListInGrid(players, RiseEventRange);
@@ -772,6 +888,56 @@ private:
                 continue;
             }
             ++itr;
+        }
+    }
+
+    // Demon Hunter's Resolve "protects them from being knocked off the Rise" (77371) and Loramus "death grip's you back" with
+    // "Hold on!" / "Return to me!" / "Ah! Get back over here!" (769627 [+57], 387878; broadcast 42291 / 41245 / 42292). A player
+    // hit by Flames of Chaos who drops below the summit within 15 s is pulled back beside Loramus, once per toss; one line per 5 s.
+    // Only tossed players: anyone may still walk or jump down to the Rune of Return and leave; not when the throw lands him on the
+    // rune's ledge. Driven here every 500 ms rather than by 77372's 2.5 s tick, so the pull comes before a long fall (ours)
+    void Grip(uint32 elapsed)
+    {
+        if (_tossed.empty())
+            return;
+
+        if (_state != RISE_PHASE_1 && _state != RISE_TRANSFER)
+        {
+            _tossed.clear();
+            return;
+        }
+
+        for (auto itr = _tossed.begin(); itr != _tossed.end();)
+        {
+            Player* player = ObjectAccessor::GetPlayer(*me, itr->first);
+            if (!player || !player->IsAlive() || player->IsBeingTeleported() || itr->second <= elapsed)
+            {
+                itr = _tossed.erase(itr);
+                continue;
+            }
+            itr->second -= elapsed;
+
+            if (player->GetPositionZ() >= RiseSummitFloorZ || player->GetExactDist2d(&RiseRuneOfReturn) < 15.0f
+                || player->GetExactDist2d(&RiseLoramusHome) > RiseEventRange)
+            {
+                ++itr;
+                continue;
+            }
+
+            float const angle = frand(0.0f, 2.0f * float(M_PI));
+            float const x = RiseLoramusHome.GetPositionX() + 3.0f * std::cos(angle);
+            float const y = RiseLoramusHome.GetPositionY() + 3.0f * std::sin(angle);
+            float z = RiseLoramusHome.GetPositionZ();
+            me->UpdateAllowedPositionZ(x, y, z);
+            player->GetMotionMaster()->MoveJump(x, y, z + 0.5f, 30.0f, 15.0f);
+            TC_LOG_DEBUG("scripts", "Blasted Lands: Loramus pulls player %u back onto the Rise", player->GetGUID().GetCounter());
+
+            if (!_gripCooldown && me->IsVisible())
+            {
+                Talk(TALK_LORAMUS_GRIP);
+                _gripCooldown = 5000;
+            }
+            itr = _tossed.erase(itr);
         }
     }
 
@@ -1034,7 +1200,10 @@ private:
     RiseState _state = RISE_IDLE;
     ObjectGuid _razelikhGUID;
     ObjectGuid _defiledGUID;
-    GuidSet _participants;      // players with the quest seen within 60 yd since the intro
+    GuidSet _participants;      // players seen alive within 60 yd since the intro (raised by the Usher if they release there)
+    std::map<ObjectGuid, uint32> _tossed;   // players hit by Flames of Chaos -> ms left to watch them
+    uint32 _gripTimer = 500;
+    uint32 _gripCooldown = 0;
     uint32 _scanTimer = 1000;
     uint32 _volleyTimer = 15000;
     uint32 _resolveTimer = 5000;
