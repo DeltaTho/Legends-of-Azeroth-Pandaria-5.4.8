@@ -338,6 +338,7 @@ void AddSC_badlands_stories();
 void AddSC_blasted_lands();
 void AddSC_blasted_lands_nethergarde();
 void AddSC_blasted_lands_bloodstone();
+void AddSC_blasted_lands_rockpool();
 void AddSC_burning_steppes();
 void AddSC_burning_steppes_followers();
 void AddSC_burning_steppes_assault();
@@ -1404,6 +1405,7 @@ void AddEasternKingdomsScripts()
     AddSC_blasted_lands();
     AddSC_blasted_lands_nethergarde();
     AddSC_blasted_lands_bloodstone();
+    AddSC_blasted_lands_rockpool();
     AddSC_burning_steppes();
     AddSC_burning_steppes_followers();
     AddSC_burning_steppes_assault();
