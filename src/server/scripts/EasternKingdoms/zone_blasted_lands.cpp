@@ -40,6 +40,7 @@ EndContentData */
 #include "SpellInfo.h"
 #include "SpellScript.h"
 #include "TemporarySummon.h"
+#include "Corpse.h"
 #include "MotionMaster.h"
 
 enum DeathlyUsher
@@ -184,9 +185,12 @@ enum RiseState
 
 Position const RiseLoramusHome      = { -11239.0f, -2838.34f, 158.053f, 5.63741f };
 Position const RiseRazelikhSpawn    = { -11234.5f, -2842.73f, 158.034f, 2.19912f };     // mop's static 313940 = Wowhead pin
+Position const RiseUsherSide        = { -11112.0f, -2901.0f, 10.75f, 2.47f };           // 6 yd from the Deathly Usher, facing him (ours)
 
 float const RiseEventRange          = 60.0f;    // players taking part, and credited
 float const RiseStartRange          = 25.0f;    // a player with the quest this close starts it (the Usher lands him 7 yd away)
+float const RiseCorpseRange         = 80.0f;    // a participant whose corpse lies this close to Loramus died on the Rise
+uint32 const RiseHoldMs             = 10 * MINUTE * IN_MILLISECONDS;    // a held fight resets after this long with nobody back (ours)
 
 static bool HoldsRakhlikh(Player const* player)
 {
@@ -598,7 +602,7 @@ struct npc_blasted_lands_loramus_rise : public ScriptedAI
         else
             _scanTimer -= diff;
 
-        if (_state != RISE_PHASE_1 || !UpdateVictim())
+        if (_state != RISE_PHASE_1 || _held || !UpdateVictim())
             return;
 
         if (_volleyTimer <= diff)
@@ -671,36 +675,145 @@ private:
         me->GetPlayerListInGrid(players, RiseEventRange);
 
         bool starter = false;
+        bool fighter = false;
         for (Player* player : players)
-            if (player->IsAlive() && HoldsRakhlikh(player) && me->IsWithinDist3d(player, RiseStartRange))
+        {
+            // every player alive on the Rise during the event, with the quest or not (a helper the group option took up), is raised
+            // by the Usher if he dies there and releases; only quest holders start the fight and keep it from holding
+            if (_state != RISE_IDLE && _state != RISE_FALLEN && player->IsAlive())
+                _participants.insert(player->GetGUID());
+            if (!HoldsRakhlikh(player) || !player->IsAlive() || player->IsInFlight())
+                continue;
+            fighter = true;
+            if (me->IsWithinDist3d(player, RiseStartRange))
                 starter = true;
+        }
+
+        ResurrectParticipants();
 
         switch (_state)
         {
             case RISE_IDLE:
                 if (starter)
                     StartIntro();
+                else if (_participants.empty() && me->isActiveObject())
+                    me->setActive(false, ActiveFlags::Script);
                 break;
             case RISE_PHASE_1:
-                if (!GetRazelikh())
-                    ResetEvent();
-                else if (!me->GetVictim())
-                    EngageRazelikh();
-                break;
             case RISE_PHASE_2:
             case RISE_BEGGING:
-                if (!GetDefiled())
+                if (_state == RISE_PHASE_1 ? !GetRazelikh() : !GetDefiled())
+                {
                     ResetEvent();
+                    break;
+                }
+
+                // Death, wipe, leaving: the fight holds and picks up where it was left (819747); reset only after 10 min (ours)
+                if (!fighter)
+                {
+                    if (!_held)
+                        Hold();
+                    else if ((_heldMs += 1000) >= RiseHoldMs)
+                        ResetEvent();
+                }
+                else if (_held)
+                    Resume();
+                else if (_state == RISE_PHASE_1 && !me->GetVictim())
+                    EngageRazelikh();
                 break;
             default:
                 break;
         }
     }
 
+    // A participant who died on the Rise and released his spirit is raised beside the Deathly Usher at once, in his body: "you will
+    // be in your physical form ... very close to the etheral being", then back up to "pick up the fight where you left off" (819747
+    // [+29]; full health and the spot are ours). Without this his ghost lands at the Dreadmaul Hold graveyard with the corpse on a
+    // summit a ghost cannot reach (the Usher does not talk to ghosts)
+    void ResurrectParticipants()
+    {
+        for (auto itr = _participants.begin(); itr != _participants.end();)
+        {
+            Player* player = ObjectAccessor::GetPlayer(*me, *itr);
+            if (!player)
+            {
+                itr = _state == RISE_IDLE ? _participants.erase(itr) : std::next(itr);
+                continue;
+            }
+
+            if (player->HasFlag(PLAYER_FIELD_PLAYER_FLAGS, PLAYER_FLAGS_GHOST))
+            {
+                if (player->IsBeingTeleported())
+                {
+                    ++itr;
+                    continue;
+                }
+
+                Corpse* corpse = player->GetCorpse();
+                if (corpse && corpse->GetExactDist(&RiseLoramusHome) <= RiseCorpseRange)
+                {
+                    TC_LOG_DEBUG("scripts", "Blasted Lands: player %u released on the Rise of the Defiler, raised by the Deathly Usher",
+                        player->GetGUID().GetCounter());
+                    player->ResurrectPlayer(1.0f, false);
+                    player->SpawnCorpseBones();
+                    player->NearTeleportTo(RiseUsherSide.GetPositionX(), RiseUsherSide.GetPositionY(), RiseUsherSide.GetPositionZ(),
+                        RiseUsherSide.GetOrientation());
+                }
+                else
+                {
+                    // died somewhere else: not ours to raise
+                    itr = _participants.erase(itr);
+                    continue;
+                }
+            }
+            else if (_state == RISE_IDLE && player->IsAlive())
+            {
+                itr = _participants.erase(itr);
+                continue;
+            }
+            ++itr;
+        }
+    }
+
+    // Nobody with the quest alive on the Rise: everybody stops where they are and keeps his health (no evade, no regeneration)
+    void Hold()
+    {
+        TC_LOG_DEBUG("scripts", "Blasted Lands: nobody left fighting on the Rise of the Defiler, the event holds");
+        _held = true;
+        _heldMs = 0;
+        if (Creature* razelikh = GetRazelikh())
+            razelikh->AI()->DoAction(ACTION_RAZELIKH_STOP);
+        if (Creature* defiled = GetDefiled())
+            defiled->AI()->DoAction(ACTION_RAZELIKH_STOP);
+        if (_state == RISE_PHASE_1)
+        {
+            me->InterruptNonMeleeSpells(false);
+            me->CombatStop(true);
+            me->SetReactState(REACT_PASSIVE);
+        }
+    }
+
+    void Resume()
+    {
+        TC_LOG_DEBUG("scripts", "Blasted Lands: a player is back on the Rise of the Defiler, the event resumes");
+        _held = false;
+        _heldMs = 0;
+        if (_state == RISE_PHASE_1)
+        {
+            if (Creature* razelikh = GetRazelikh())
+                razelikh->AI()->DoAction(ACTION_RAZELIKH_RELEASE);
+            EngageRazelikh();
+        }
+        else if (Creature* defiled = GetDefiled())
+            defiled->AI()->DoAction(ACTION_RAZELIKH_RELEASE);
+    }
+
     void StartIntro()
     {
         TC_LOG_DEBUG("scripts", "Blasted Lands: Loramus begins the Rise of the Defiler event");
         _state = RISE_INTRO;
+        _held = false;
+        _heldMs = 0;
         me->setActive(true, ActiveFlags::Script);
         me->SetFacingTo(me->GetAngle(&RiseRazelikhSpawn));
         Talk(TALK_LORAMUS_RETURNED);
@@ -789,6 +902,7 @@ private:
         TC_LOG_DEBUG("scripts", "Blasted Lands: Loramus is beaten on the Rise of the Defiler, the event ends");
         DespawnActors();
         _state = RISE_FALLEN;
+        _held = false;
         _events.Reset();
         me->InterruptNonMeleeSpells(false);
         me->CombatStop(true);
@@ -819,10 +933,13 @@ private:
         DespawnActors();
         _events.Reset();
         _state = RISE_IDLE;
+        _held = false;
+        _heldMs = 0;
         Show();
         me->CombatStop(true);
         me->SetReactState(REACT_PASSIVE);
-        me->setActive(false, ActiveFlags::Script);
+        if (_participants.empty())     // else kept active until the dead among them are raised (ResurrectParticipants)
+            me->setActive(false, ActiveFlags::Script);
     }
 
     void HandleEvent(uint32 eventId)
@@ -917,9 +1034,12 @@ private:
     RiseState _state = RISE_IDLE;
     ObjectGuid _razelikhGUID;
     ObjectGuid _defiledGUID;
+    GuidSet _participants;      // players with the quest seen within 60 yd since the intro
     uint32 _scanTimer = 1000;
     uint32 _volleyTimer = 15000;
     uint32 _resolveTimer = 5000;
+    uint32 _heldMs = 0;
+    bool _held = false;
     bool _nagFlip = false;
 };
 
