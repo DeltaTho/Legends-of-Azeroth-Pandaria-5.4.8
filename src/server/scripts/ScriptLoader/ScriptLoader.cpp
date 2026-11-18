@@ -336,6 +336,7 @@ void AddSC_arathi_highlands();
 void AddSC_badlands_titans();
 void AddSC_badlands_stories();
 void AddSC_blasted_lands();
+void AddSC_blasted_lands_nethergarde();
 void AddSC_burning_steppes();
 void AddSC_burning_steppes_followers();
 void AddSC_burning_steppes_assault();
@@ -1400,6 +1401,7 @@ void AddEasternKingdomsScripts()
     AddSC_badlands_titans();
     AddSC_badlands_stories();
     AddSC_blasted_lands();
+    AddSC_blasted_lands_nethergarde();
     AddSC_burning_steppes();
     AddSC_burning_steppes_followers();
     AddSC_burning_steppes_assault();
