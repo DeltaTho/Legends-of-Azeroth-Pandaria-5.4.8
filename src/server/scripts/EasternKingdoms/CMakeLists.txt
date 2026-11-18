@@ -216,6 +216,7 @@ set(scripts_STAT_SRCS
   EasternKingdoms/zone_burning_steppes_assault.cpp
   EasternKingdoms/zone_blasted_lands.cpp
   EasternKingdoms/zone_blasted_lands_nethergarde.cpp
+  EasternKingdoms/zone_blasted_lands_bloodstone.cpp
   EasternKingdoms/zone_stormwind_city.cpp
   EasternKingdoms/zone_tol_barad.cpp
   EasternKingdoms/ZulAman/boss_halazzi.cpp
