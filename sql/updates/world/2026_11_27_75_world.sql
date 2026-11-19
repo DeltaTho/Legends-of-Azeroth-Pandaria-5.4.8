@@ -1,0 +1,34 @@
+-- Durotar, the Dranosh'ar Blockade and the north, and the goblin arrival: quest texts as TDB 4.4.2 (Cataclysm Classic).
+-- quest_offer_reward of the fifteen quests: the emotes, the $B line breaks and the stage directions mop had lost ("<The orc
+-- continues on in hushed tones.>", "<The Warchief takes a step back, visibly shaken.>", "<Garrosh points to Gobber.>").
+-- quest_request_items: the progress texts, six of which mop lacked (25205 25206 25236 25257 25258 25259); the other five lose
+-- their emotes and "$gbrother:sister;" without the row.
+-- Sourced: TDB 4.4.2 rows of the same ids, verbatim (VerifiedBuild 0: the column is a smallint).
+UPDATE `quest_offer_reward` SET `Emote1`=1,`Emote2`=6,`Emote3`=0,`Emote4`=0,`EmoteDelay1`=0,`EmoteDelay2`=0,`EmoteDelay3`=0,`EmoteDelay4`=0,`RewardText`='The moral of the story: hasty, lazy actions have ruinous results.  We mustn\'t take shortcuts... we must work for our rewards.  I\'ve been trying to tell this story to the "Enforcer", but I fear his Hellscream-worshipping skull is a little bit too thick.' WHERE `ID`=25205;
+UPDATE `quest_offer_reward` SET `Emote1`=0,`Emote2`=0,`Emote3`=0,`Emote4`=0,`EmoteDelay1`=0,`EmoteDelay2`=0,`EmoteDelay3`=0,`EmoteDelay4`=0,`RewardText`='See?  The shaman\'s tales are nothing but that... a youngling\'s bedtime stories.  The new Horde takes what it wants, and doesn\'t waste time with such frivolity.$b$bIf you get a chance, I recommend you tell Shin... and those like him... not to waste any more of your time.' WHERE `ID`=25206;
+UPDATE `quest_offer_reward` SET `Emote1`=1,`Emote2`=1,`Emote3`=0,`Emote4`=0,`EmoteDelay1`=0,`EmoteDelay2`=0,`EmoteDelay3`=0,`EmoteDelay4`=0,`RewardText`='The electricity was only one of the dangers.  If those carcasses rot too long under the water, that entire source becomes undrinkable.$b$bWell done, $c.' WHERE `ID`=25236;
+UPDATE `quest_offer_reward` SET `Emote1`=5,`Emote2`=0,`Emote3`=0,`Emote4`=0,`EmoteDelay1`=0,`EmoteDelay2`=0,`EmoteDelay3`=0,`EmoteDelay4`=0,`RewardText`='Vek\'nag sent you?  Without telling you that I need wagon wheels, nails, and rations?  That idiot.' WHERE `ID`=25256;
+UPDATE `quest_offer_reward` SET `Emote1`=1,`Emote2`=0,`Emote3`=0,`Emote4`=0,`EmoteDelay1`=0,`EmoteDelay2`=0,`EmoteDelay3`=0,`EmoteDelay4`=0,`RewardText`='I watched you fight out there.  How long you been a $c?$b$bYou\'re alright, kid.' WHERE `ID`=25257;
+UPDATE `quest_offer_reward` SET `Emote1`=1,`Emote2`=0,`Emote3`=0,`Emote4`=0,`EmoteDelay1`=0,`EmoteDelay2`=0,`EmoteDelay3`=0,`EmoteDelay4`=0,`RewardText`='I\'m at a crossroads now, $N... you defeated him easily in combat, but then again, I did get him for free, and he\'s pretty cheap to feed.  Maybe we\'ll keep him around for a bit.' WHERE `ID`=25258;
+UPDATE `quest_offer_reward` SET `Emote1`=1,`Emote2`=0,`Emote3`=0,`Emote4`=0,`EmoteDelay1`=0,`EmoteDelay2`=0,`EmoteDelay3`=0,`EmoteDelay4`=0,`RewardText`='Fine, here\'s the money... but you\'d better make yourself scarce before I reconsider my policy on keeping Horde slaves.' WHERE `ID`=25259;
+UPDATE `quest_offer_reward` SET `Emote1`=1,`Emote2`=21,`Emote3`=0,`Emote4`=0,`EmoteDelay1`=0,`EmoteDelay2`=0,`EmoteDelay3`=0,`EmoteDelay4`=0,`RewardText`='I ask for an orb, and you bring half of the goblin\'s arm with you?  I like the way you work.$b$bTell you what... you\'ve already given me a hand.  Allow me to return the favor.' WHERE `ID`=25260;
+UPDATE `quest_offer_reward` SET `Emote1`=2,`Emote2`=1,`Emote3`=0,`Emote4`=0,`EmoteDelay1`=0,`EmoteDelay2`=0,`EmoteDelay3`=0,`EmoteDelay4`=0,`RewardText`='Welcome, $N.  Word reached me of your coming, and of your exploits in Durotar.$B$BYou are a $c of growing skill and renown.$B$BStay on the pure path, and your future will be great indeed.' WHERE `ID`=25261;
+UPDATE `quest_offer_reward` SET `Emote1`=0,`Emote2`=0,`Emote3`=0,`Emote4`=0,`EmoteDelay1`=0,`EmoteDelay2`=0,`EmoteDelay3`=0,`EmoteDelay4`=0,`RewardText`='Good.  Hiding within these collars is the secret behind the Burning Blade.  And I will uncover that secret...' WHERE `ID`=25262;
+UPDATE `quest_offer_reward` SET `Emote1`=5,`Emote2`=0,`Emote3`=0,`Emote4`=0,`EmoteDelay1`=0,`EmoteDelay2`=0,`EmoteDelay3`=0,`EmoteDelay4`=0,`RewardText`='Ah, and where did you get this?  Good Margoz sent you to me, did he?$B$BWell, let me take a closer look...' WHERE `ID`=25263;
+UPDATE `quest_offer_reward` SET `Emote1`=6,`Emote2`=0,`Emote3`=0,`Emote4`=0,`EmoteDelay1`=0,`EmoteDelay2`=0,`EmoteDelay3`=0,`EmoteDelay4`=0,`RewardText`='This is not news to me.  While I appreciate your efforts, the Burning Blade will have to wait.  We have other matters to which we must attend.' WHERE `ID`=25264;
+UPDATE `quest_offer_reward` SET `Emote1`=1,`Emote2`=0,`Emote3`=0,`Emote4`=0,`EmoteDelay1`=0,`EmoteDelay2`=0,`EmoteDelay3`=0,`EmoteDelay4`=0,`RewardText`='Good, you\'re here.  Welcome to Azshara, the stage for the next act of the Horde\'s glorious future.  Now get to work.' WHERE `ID`=25648;
+UPDATE `quest_offer_reward` SET `Emote1`=1,`Emote2`=0,`Emote3`=0,`Emote4`=0,`EmoteDelay1`=1000,`EmoteDelay2`=0,`EmoteDelay3`=0,`EmoteDelay4`=0,`RewardText`='<The orc continues on in hushed tones.>$B$BI know who sent you. Did he give you something to deliver to me?' WHERE `ID`=25266;
+UPDATE `quest_offer_reward` SET `Emote1`=5,`Emote2`=1,`Emote3`=397,`Emote4`=0,`EmoteDelay1`=0,`EmoteDelay2`=1000,`EmoteDelay3`=0,`EmoteDelay4`=0,`RewardText`='Thrall had you deliver this?$B$B<The Warchief takes a step back, visibly shaken.>$B$BI understand the meaning of this all too well, goblin.$B$B<Garrosh points to Gobber.>$B$BThis smelly thing was caught unattended in the city and seems to recognize you.$B$BI have already put others of your kind to work in Azshara. Take it with you when you leave.$B$BFrom this day forward, you and your Bilgewater Cartel will serve the Horde!' WHERE `ID`=25267;
+DELETE FROM `quest_request_items` WHERE `ID` IN (25205,25206,25236,25257,25258,25259,25260,25262,25263,25266,25267);
+INSERT INTO `quest_request_items` (`ID`,`EmoteOnComplete`,`EmoteOnIncomplete`,`CompletionText`,`VerifiedBuild`) VALUES
+(25205,0,0,'Pay close attention to the meaning behind my words, child.',0),
+(25206,0,0,'Elementals?  Pfuh!  No match for the power of the Horde.',0),
+(25236,0,0,'I need that canyon clean, $N.  Water is normally scarce in Durotar... we should take advantage of this.',0),
+(25257,0,0,'How\'d you fare?',0),
+(25258,0,0,'How did you do?',0),
+(25259,0,0,'You don\'t stand a chance against Gaur.',0),
+(25260,0,0,'Run into any trouble on the way?',0),
+(25262,0,0,'Have you yet entered Skull Rock, $N?  Do you have the Searing Collars?',0),
+(25263,0,0,'My most humble greetings, $c.  How might I help my $r $gbrother:sister; today?',0),
+(25266,6,0,'What possible business could you have in Orgrimmar, goblin?',0),
+(25267,6,0,'What is this, goblin? Your kind are not allowed inside Grommash Hold.$B$BLeave before I have to teach you your place.',0);
