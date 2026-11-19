@@ -26,6 +26,8 @@
 #include "Player.h"
 #include "SpellInfo.h"
 #include "CreatureTextMgr.h"
+#include "DatabaseEnv.h"
+#include <mutex>
 #include <set>
 
 /*######
@@ -1354,6 +1356,8 @@ enum ThonksSpyglassSpells
 };
 
 // Thonk's Spyglass 73817
+// Each use shows the next survivor not yet found (73741 / 73763 / 73764 / 73765 summon that view's telescope camera, which
+// seats the player). Nothing while the player is already on a vehicle: a second view must never start from inside the first
 class spell_thonks_spyglass : public SpellScript
 {
     PrepareSpellScript(spell_thonks_spyglass);
@@ -1362,6 +1366,9 @@ class spell_thonks_spyglass : public SpellScript
     {
         if (Player* player = GetCaster()->ToPlayer())
         {
+            if (player->GetVehicle())
+                return;
+
             if (player->GetQuestStatus(QUEST_LOST_IN_THE_FLOODS) == QUEST_STATUS_INCOMPLETE && !player->GetQuestObjectiveCounter(OBJECTIVE_RAGGARAN))
             {
                 player->CastSpell(player, SPELL_TELESCOPE_1);
@@ -1388,6 +1395,431 @@ class spell_thonks_spyglass : public SpellScript
     void Register() override
     {
         AfterCast += SpellCastFn(spell_thonks_spyglass::HandleAfterCast);
+    }
+};
+
+enum WatershedTelescope
+{
+    POINT_TELESCOPE_VIEW        = 1,
+
+    EVENT_TELESCOPE_BOARDED     = 1,
+    EVENT_TELESCOPE_VIEW_END,
+    EVENT_TELESCOPE_EXPIRE
+};
+
+struct WatershedTelescopeView
+{
+    uint32 Entry;
+    uint32 Credit;          // the objective's kill credit (Durotar Telescope Quest KC 1-4)
+    Position End;           // where the camera stops and holds
+    Position Subject;       // what the view looks at
+};
+
+// The end points are the last points of the four telescope paths mop had (`waypoints` 39320, 39345, 39346, 39347; Misha's
+// raised 2.4 yd: its approach skimmed 2.2 yd over the slope before her farm), the subjects the spawns they frame: Raggaran 253002, Tekla at the flooded hut (309907 in both TDBs), Misha 251212, Zen'Taji 251574
+WatershedTelescopeView const WatershedTelescopeViews[] =
+{
+    { 39320, 39357, {  60.7847f, -4232.33f, 38.4023f }, {  49.1719f, -4220.28f, 35.3841f } },
+    { 39345, 39358, { 555.582f,  -4146.90f, 28.3467f }, { 562.012f,  -4103.38f, 16.8399f } },
+    { 39346, 39359, { 721.934f,  -4260.48f, 25.5000f }, { 728.602f,  -4256.38f, 20.0780f } },
+    { 39347, 39360, { 349.146f,  -3869.01f, 25.0690f }, { 349.856f,  -3857.87f, 21.1875f } },
+};
+
+// Beside Thonk on the tower top, facing him (the point the old SmartAI teleported to: 393.527 -4581.75 76.592)
+Position const WatershedTelescopeReturn = { 393.527f, -4581.75f, 76.592f, 4.29f };
+
+// Players let out of a camera and not yet set down on the tower (the 300 ms between the exit and the teleport): a logout then,
+// like a logout in the seat, would save them in the air (player_durotar_watershed::OnLogout)
+std::mutex WatershedTelescopePendingLock;
+std::set<ObjectGuid> WatershedTelescopePending;
+
+bool IsWatershedTelescope(uint32 entry)
+{
+    for (WatershedTelescopeView const& view : WatershedTelescopeViews)
+        if (view.Entry == entry)
+            return true;
+    return false;
+}
+
+// 39320, 39345, 39346, 39347 - Durotar Watershed Telescope 01-04 (Lost in the Floods 25187)
+// Sourced: each use of the spyglass on the tower top plays a short camera view, letterboxed, without the character, of one
+// survivor; nothing is said; credit only for a view watched to the end ("It wont count if you skip the cinematic!", Wowhead
+// 2010-11-06 [+91]; wiki Notes); summon spell, vehicle 686 and seat 7622 (hidden passenger, no control, can leave) from the
+// DBC; after the view the player is back on the tower ("sit tight ... while still up by Thonk", 2011-11-12).
+// Ours (no source has the flight): one smooth curve from the summon spot straight towards the survivor, a few yards up at
+// first and down to the old paths' end points (no backward first leg: the generated paths backed away 37 yd first), at the
+// template's speed (rate 6, about 42 yd/s: 11 s to Raggaran, the hut and Misha, 17 s to Zen'Taji), then a 10 s hold facing
+// the survivor (the old SmartAI's hold), then back on the tower beside Thonk, facing him.
+// Every way out ends once: the end of the view credits (only then, and only while seated) and sets the player down on the
+// tower; leaving early, death, the camera unsummoned by anything else, or the 60 s safety end set the player down on the
+// tower without credit; a logout (or a shutdown) in the seat or before the set-down is saved on the tower. Getting off and the teleport are never in the same tick (a
+// teleport in the exit's tick left the client stuck in the camera view in Hillsbrad: scripted-quest-scenes, "Ending"): the
+// seated player is let out and held in the air with gravity off, the teleport follows 300 ms later, gravity comes back after
+// it. The camera is the summoner's own (the summon effect seats its caster): a second player on the tower gets a camera of
+// his own and is never carried or credited by this one.
+struct npc_durotar_watershed_telescope : public ScriptedAI
+{
+    npc_durotar_watershed_telescope(Creature* creature) : ScriptedAI(creature), _view(nullptr), _boardTries(0), _started(false), _done(false) { }
+
+    void IsSummonedBy(Unit* summoner) override
+    {
+        for (WatershedTelescopeView const& view : WatershedTelescopeViews)
+            if (view.Entry == me->GetEntry())
+                _view = &view;
+
+        Player* player = summoner->ToPlayer();
+        if (!player || !_view)
+        {
+            _done = true;
+            me->DespawnOrUnsummon();
+            return;
+        }
+
+        _playerGUID = player->GetGUID();
+        me->SetReactState(REACT_PASSIVE);
+        me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_PC | UNIT_FLAG_IMMUNE_TO_NPC | UNIT_FLAG_NOT_SELECTABLE);
+        me->SetCanFly(true);
+        me->SetDisableGravity(true);
+        me->SetSpeed(MOVE_RUN, 6.0f);
+        me->SetSpeed(MOVE_FLIGHT, 6.0f);
+        me->setActive(true, ActiveFlags::Script);
+
+        _events.ScheduleEvent(EVENT_TELESCOPE_BOARDED, 250ms);
+        _events.ScheduleEvent(EVENT_TELESCOPE_EXPIRE, 60s);
+    }
+
+    void AttackStart(Unit* /*who*/) override { }
+    void MoveInLineOfSight(Unit* /*who*/) override { }
+    void EnterEvadeMode(EvadeReason /*why*/) override { }
+
+    void PassengerBoarded(Unit* passenger, int8 /*seatId*/, bool apply) override
+    {
+        if (apply || _done || passenger->GetGUID() != _playerGUID)
+            return;
+
+        Player* player = passenger->ToPlayer();
+        if (!player)
+            return;
+
+        // Logging out: the saved position was already put on the tower (player_durotar_watershed::OnLogout)
+        if (player->GetSession()->PlayerLogout())
+        {
+            _done = true;
+            _events.Reset();
+            return;
+        }
+
+        // Left the seat early (the leave button), died, or was taken off by anything else: no credit
+        Finish(player, false);
+    }
+
+    // Unsummoned by something other than Finish while the player may still be seated (the owner's logout or death can unsummon
+    // his minions before the seat is emptied)
+    void Unsummoned() override
+    {
+        if (_done)
+            return;
+
+        if (Player* player = ObjectAccessor::GetPlayer(*me, _playerGUID))
+            if (!player->GetSession()->PlayerLogout())
+            {
+                Finish(player, false);
+                return;
+            }
+
+        _done = true;
+    }
+
+    void MovementInform(uint32 type, uint32 pointId) override
+    {
+        if (_done || pointId != POINT_TELESCOPE_VIEW || (type != EFFECT_MOTION_TYPE && type != POINT_MOTION_TYPE))
+            return;
+
+        me->SetFacingTo(me->GetAngle(_view->Subject.GetPositionX(), _view->Subject.GetPositionY()));
+        _events.ScheduleEvent(EVENT_TELESCOPE_VIEW_END, 10s);
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        if (_done)
+            return;
+
+        Player* player = ObjectAccessor::GetPlayer(*me, _playerGUID);
+        if (!player || !player->IsInWorld())
+        {
+            _done = true;
+            me->DespawnOrUnsummon();
+            return;
+        }
+
+        if (_started && player->GetVehicleBase() != me)
+        {
+            Finish(player, false);
+            return;
+        }
+
+        _events.Update(diff);
+        while (uint32 eventId = _events.ExecuteEvent())
+        {
+            switch (eventId)
+            {
+                case EVENT_TELESCOPE_BOARDED:
+                    if (player->GetVehicleBase() == me)
+                    {
+                        _started = true;
+                        FlyToView();
+                    }
+                    else if (++_boardTries < 8)
+                        _events.ScheduleEvent(EVENT_TELESCOPE_BOARDED, 250ms);
+                    else
+                    {
+                        // Never seated (the ride failed): the player never left the tower; nothing to undo
+                        _done = true;
+                        me->DespawnOrUnsummon();
+                        return;
+                    }
+                    break;
+                case EVENT_TELESCOPE_VIEW_END:
+                    Finish(player, true);
+                    return;
+                case EVENT_TELESCOPE_EXPIRE:
+                    Finish(player, false);
+                    return;
+                default:
+                    break;
+            }
+        }
+    }
+
+private:
+    // One curve from the summon spot towards the survivor: lifted a little over the first third, down to 6 yd above the end
+    // point near the end, sampled as evenly spaced points so the speed does not jump (scripted-quest-scenes, FlyCurve)
+    void FlyToView()
+    {
+        Position const here = me->GetPosition();
+        Position const& end = _view->End;
+        float const dx = end.GetPositionX() - here.GetPositionX();
+        float const dy = end.GetPositionY() - here.GetPositionY();
+
+        std::vector<Position> controls(3, here);
+        controls.emplace_back(here.GetPositionX() + dx * 0.30f, here.GetPositionY() + dy * 0.30f, here.GetPositionZ() + 4.0f);
+        controls.emplace_back(here.GetPositionX() + dx * 0.85f, here.GetPositionY() + dy * 0.85f, end.GetPositionZ() + 6.0f);
+        controls.push_back(end);
+        controls.push_back(end);
+        controls.push_back(end);
+
+        uint32 const subSteps = 16;
+        std::vector<Position> dense(1, here);
+        for (size_t i = 0; i + 3 < controls.size(); ++i)
+        {
+            Position const& c0 = controls[i];
+            Position const& c1 = controls[i + 1];
+            Position const& c2 = controls[i + 2];
+            Position const& c3 = controls[i + 3];
+            for (uint32 k = 1; k <= subSteps; ++k)
+            {
+                float t = float(k) / subSteps;
+                float b0 = (1.0f - t) * (1.0f - t) * (1.0f - t) / 6.0f;
+                float b1 = (3.0f * t * t * t - 6.0f * t * t + 4.0f) / 6.0f;
+                float b2 = (-3.0f * t * t * t + 3.0f * t * t + 3.0f * t + 1.0f) / 6.0f;
+                float b3 = t * t * t / 6.0f;
+                dense.emplace_back(
+                    b0 * c0.GetPositionX() + b1 * c1.GetPositionX() + b2 * c2.GetPositionX() + b3 * c3.GetPositionX(),
+                    b0 * c0.GetPositionY() + b1 * c1.GetPositionY() + b2 * c2.GetPositionY() + b3 * c3.GetPositionY(),
+                    b0 * c0.GetPositionZ() + b1 * c1.GetPositionZ() + b2 * c2.GetPositionZ() + b3 * c3.GetPositionZ());
+            }
+        }
+
+        float length = 0.0f;
+        for (size_t i = 0; i + 1 < dense.size(); ++i)
+            length += dense[i].GetExactDist(dense[i + 1]);
+
+        float const step = 6.0f;
+        size_t const count = std::max<size_t>(1, size_t(std::lround(length / step)));
+        float const spacing = length / count;
+
+        std::vector<Position> path(1, here);
+        float walked = 0.0f;
+        float next = spacing;
+        for (size_t i = 0; i + 1 < dense.size(); ++i)
+        {
+            Position const& a = dense[i];
+            Position const& b = dense[i + 1];
+            float segment = a.GetExactDist(b);
+            while (segment > 0.0f && walked + segment >= next && path.size() < count)
+            {
+                float f = (next - walked) / segment;
+                path.emplace_back(a.GetPositionX() + (b.GetPositionX() - a.GetPositionX()) * f,
+                    a.GetPositionY() + (b.GetPositionY() - a.GetPositionY()) * f,
+                    a.GetPositionZ() + (b.GetPositionZ() - a.GetPositionZ()) * f);
+                next += spacing;
+            }
+            walked += segment;
+        }
+        path.push_back(end);
+
+        me->GetMotionMaster()->Clear();
+        me->GetMotionMaster()->MoveSmoothPath(POINT_TELESCOPE_VIEW, path.data(), path.size(), false, true);
+    }
+
+    // Credit (only at the end of the view, only while seated), let the player out, set him down on the tower
+    void Finish(Player* player, bool credit)
+    {
+        if (_done)
+            return;
+
+        _done = true;
+        _events.Reset();
+
+        bool const seated = player->GetVehicleBase() == me;
+        if (credit && seated)
+            player->KilledMonsterCredit(_view->Credit);
+
+        // Held where the camera lets go (gravity off; not rooted: a root or a teleport in the exit's own tick cuts the exit
+        // off and leaves the view stuck). A player who got out himself is already falling: not held, the teleport catches him
+        if (seated)
+        {
+            player->ExitVehicle();
+            player->SetDisableGravity(true);
+        }
+
+        // Where the camera let him go: the set-down only moves a player still there (held, or falling after the leave button);
+        // one teleported or summoned out of the seat (Player::TeleportTo exits the vehicle first) is left where he went
+        if (_started)
+            SetDownOnTower(player, seated, player->GetPosition());
+
+        me->DespawnOrUnsummon(500);
+    }
+
+    // Runs from the player's own event queue, so it outlives the camera; a dead player is moved too (the corpse then lies on
+    // the tower, not in the flood)
+    static void SetDownOnTower(Player* player, bool held, Position released)
+    {
+        {
+            std::lock_guard<std::mutex> lock(WatershedTelescopePendingLock);
+            WatershedTelescopePending.insert(player->GetGUID());
+        }
+
+        uint32 const mapId = player->GetMapId();
+        player->m_Events.AddLambdaEventAtOffset([player, held, released, mapId]()
+        {
+            {
+                std::lock_guard<std::mutex> lock(WatershedTelescopePendingLock);
+                WatershedTelescopePending.erase(player->GetGUID());
+            }
+
+            if (!player->IsInWorld())
+                return;
+
+            if (!player->GetVehicle() && !player->IsBeingTeleported() && player->GetMapId() == mapId
+                && player->GetExactDist(&released) < 20.0f)
+                player->NearTeleportTo(WatershedTelescopeReturn.GetPositionX(), WatershedTelescopeReturn.GetPositionY(),
+                    WatershedTelescopeReturn.GetPositionZ(), WatershedTelescopeReturn.GetOrientation());
+
+            if (!held)
+                return;
+
+            // The enable is sent twice: the player's own movement packets replace the server's flags, so one sent before the
+            // client took the hold would leave the client hovering (scripted-quest-scenes, Finish)
+            for (uint32 delay : { 100, 1500 })
+                player->m_Events.AddLambdaEventAtOffset([player]()
+                {
+                    if (!player->IsInWorld() || player->GetVehicle() || player->IsInFlight() || player->HasAuraType(SPELL_AURA_FLY)
+                        || player->HasAuraType(SPELL_AURA_MOD_INCREASE_MOUNTED_FLIGHT_SPEED))
+                        return;
+
+                    if (!player->SetDisableGravity(false))
+                        player->SetDisableGravity(false, true);
+                }, delay);
+        }, 300);
+    }
+
+    EventMap _events;
+    ObjectGuid _playerGUID;
+    WatershedTelescopeView const* _view;
+    uint8 _boardTries;
+    bool _started;
+    bool _done;
+};
+
+// A logout (also the shutdown's) while seated in a telescope or in the 300 ms before the set-down: WorldSession::LogoutPlayer
+// has just saved the player in the air (it saves before RemoveFromWorld empties the seat; OnPlayerLogout runs in between, the
+// player still seated). First line: the saved position is moved to the tower spot by an update queued after that save. This
+// ASSUMES the character-database async queue runs in order, i.e. one worker (CharacterDatabase.WorkerThreads = 1, the
+// default and the live setting), and that the queue is drained at shutdown (DatabaseWorkerPool::Close does not drain it: core
+// issue). Backstop at login (OnLogin): a player who logs in on map 1 within the cameras' area, more than 4 yd over the ground
+// or water, not on a vehicle, with Lost in the Floods in the log, is set down on the tower; this also covers a crash after an
+// autosave in the seat.
+class player_durotar_watershed : public PlayerScript
+{
+public:
+    player_durotar_watershed() : PlayerScript("player_durotar_watershed") { }
+
+    void OnLogout(Player* player) override
+    {
+        bool pending = false;
+        {
+            std::lock_guard<std::mutex> lock(WatershedTelescopePendingLock);
+            pending = WatershedTelescopePending.erase(player->GetGUID()) > 0;
+        }
+
+        Unit* vehicle = player->GetVehicleBase();
+        bool const seated = vehicle && vehicle->GetTypeId() == TYPEID_UNIT && IsWatershedTelescope(vehicle->GetEntry());
+        // A player teleported or summoned away inside the 300 ms (a far teleport is completed before the logout) is left there
+        bool const stillHere = pending && player->GetMapId() == 1 && player->GetExactDist2d(WatershedTelescopeReturn.GetPositionX(),
+            WatershedTelescopeReturn.GetPositionY()) < 1000.0f && !player->GetVehicle();
+        if (!seated && !stillHere)
+            return;
+
+        CharacterDatabase.PExecute("UPDATE characters SET map = 1, position_x = %f, position_y = %f, position_z = %f, orientation = %f, "
+            "trans_x = 0, trans_y = 0, trans_z = 0, trans_o = 0, transguid = 0 WHERE guid = %u",
+            WatershedTelescopeReturn.GetPositionX(), WatershedTelescopeReturn.GetPositionY(), WatershedTelescopeReturn.GetPositionZ(),
+            WatershedTelescopeReturn.GetOrientation(), player->GetGUID().GetCounter());
+    }
+
+    void OnLogin(Player* player) override
+    {
+        SetDownAfterLogin(player);
+    }
+
+private:
+    // The cameras fly between the tower and the four survivors: x 30..760, y -4600..-3840 (the paths with some margin)
+    static bool InTelescopeArea(Player* player)
+    {
+        return player->GetMapId() == 1 && player->GetPositionX() > 30.0f && player->GetPositionX() < 760.0f
+            && player->GetPositionY() > -4600.0f && player->GetPositionY() < -3840.0f;
+    }
+
+    // A camera's player saved in the air logs in on foot and falls; one on a flying mount, in flight form, levitating or
+    // hovering is up there on purpose and is left alone
+    static bool MayBeCameraLeftover(Player* player)
+    {
+        return InTelescopeArea(player) && !player->GetVehicle() && !player->IsInFlight() && !player->IsMounted()
+            && !player->IsFlying() && !player->HasAuraType(SPELL_AURA_FLY) && !player->HasAuraType(SPELL_AURA_MOD_INCREASE_MOUNTED_FLIGHT_SPEED)
+            && !player->HasAuraType(SPELL_AURA_HOVER);
+    }
+
+    static void SetDownAfterLogin(Player* player)
+    {
+        QuestStatus const status = player->GetQuestStatus(QUEST_LOST_IN_THE_FLOODS);
+        if ((status != QUEST_STATUS_INCOMPLETE && status != QUEST_STATUS_COMPLETE) || !MayBeCameraLeftover(player))
+            return;
+
+        // A second later, once the player is in the world for the client too (a teleport inside OnLogin lands during the
+        // loading screen)
+        player->m_Events.AddLambdaEventAtOffset([player]()
+        {
+            if (!player->IsInWorld() || player->IsBeingTeleported() || !MayBeCameraLeftover(player))
+                return;
+
+            float const level = player->GetMap()->GetWaterOrGroundLevel(player->GetPhaseMask(), player->GetPositionX(), player->GetPositionY(),
+                player->GetPositionZ());
+            if (player->GetPositionZ() - level <= 4.0f)
+                return;
+
+            player->NearTeleportTo(WatershedTelescopeReturn.GetPositionX(), WatershedTelescopeReturn.GetPositionY(),
+                WatershedTelescopeReturn.GetPositionZ(), WatershedTelescopeReturn.GetOrientation());
+        }, 1000);
     }
 };
 
@@ -1474,6 +1906,8 @@ void AddSC_durotar()
     new aura_script<spell_summ_ji_horde_way>("spell_summ_ji_horde_way");
     new spell_script<spell_place_territorial_fetish>("spell_place_territorial_fetish");
     new spell_script<spell_thonks_spyglass>("spell_thonks_spyglass");
+    new creature_script<npc_durotar_watershed_telescope>("npc_durotar_watershed_telescope");
+    new player_durotar_watershed();
     new spell_script<spell_shrink>("spell_shrink");
     new aura_script<spell_teleport_out_blackout>("spell_teleport_out_blackout");
     new AreaTrigger_at_ring_of_valor_entrance();
