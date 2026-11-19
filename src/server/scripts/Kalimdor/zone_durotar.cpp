@@ -27,6 +27,7 @@
 #include "SpellInfo.h"
 #include "CreatureTextMgr.h"
 #include "DatabaseEnv.h"
+#include "Group.h"
 #include <mutex>
 #include <set>
 
@@ -1084,6 +1085,545 @@ public:
     }
 };
 
+enum GrandmatronTekla
+{
+    NPC_RAGGARAN                    = 39326,
+
+    SPELL_TEKLA_WATER_WALKING       = 73887,   // self + allies within 25 yd, 10 min
+    SPELL_TEKLA_AIR_SPIRITS_BOON    = 73889,   // dummy aura, no duration: the float itself is scripted
+
+    FACTION_TEKLA_ESCORT            = 250,     // friendly to players, hostile to the beasts (14, 48, 413) and quilboar (109)
+
+    SAY_TEKLA_START                 = 0,       // broadcast_text 39456
+    SAY_TEKLA_WADING                = 1,       // 39452
+    SAY_TEKLA_BETTER                = 2,       // 39453
+    SAY_TEKLA_ANKLE                 = 3,       // 39457
+    YELL_TEKLA_SPIRITS_OF_AIR       = 4,       // 39458
+    SAY_TEKLA_PRESS_ON              = 5,       // 39459
+    SAY_TEKLA_SAFE                  = 6,       // 39454
+    SAY_RAGGARAN_ALIVE              = 0,       // 39455
+
+    POINT_TEKLA_ROUTE               = 1,       // + route index
+    POINT_TEKLA_RISE                = 100,
+    POINT_TEKLA_LAND                = 101,
+    POINT_TEKLA_HOME_ROUTE          = 200,     // + route index, walking back
+    POINT_TEKLA_HUT                 = 300,
+
+    EVENT_TEKLA_SET_OFF             = 1,
+    EVENT_TEKLA_CHECK_ESCORT,
+    EVENT_TEKLA_WATER_CAST,
+    EVENT_TEKLA_WATER_BETTER,
+    EVENT_TEKLA_WATER_ON,
+    EVENT_TEKLA_AIR_YELL,
+    EVENT_TEKLA_RISE,
+    EVENT_TEKLA_FLOAT_ON,
+    EVENT_TEKLA_RAGGARAN,
+    EVENT_TEKLA_DESPAWN,
+    EVENT_TEKLA_HOME_TIMEOUT
+};
+
+struct TeklaRoutePoint
+{
+    float X, Y, Z;
+};
+
+// Her way from the doorway of the flooded hut (309907 in both TDBs: 562.012 -4103.38 16.8399) to Raggaran, through the one
+// sourced point on it (310152 in both TDBs, a sniff of her walking: 392.446 -4081.49 20.5023). Ours: the other points, ~30 yd
+// apart on the straight legs between, z from the extracted terrain and liquid (the flood's surface is 17.88); the wading stop
+// at the edge of the deep pool (z 13 under 17.9 of water, the second pool after the shallow one at 440 -4087), the ankle stop
+// about a quarter of the way from the end (134 yd of 533). The float points are 9 yd over the ground or the rocks and the
+// roof below Raggaran's spot (38.9 at 62,-4209.5).
+TeklaRoutePoint const TeklaRoute[] =
+{
+    { 533.75f, -4099.73f, 17.88f },
+    { 505.49f, -4096.08f, 20.28f },
+    { 477.23f, -4092.43f, 20.77f },
+    { 448.97f, -4088.79f, 19.16f },
+    { 420.71f, -4085.14f, 19.70f },
+    { 392.45f, -4081.49f, 20.43f },     // TDB 310152
+    { 365.63f, -4091.89f, 22.88f },
+    { 338.82f, -4102.30f, 22.86f },
+    { 312.00f, -4112.70f, 20.14f },     // TEKLA_WATER_STOP
+    { 284.40f, -4123.40f, 17.88f },
+    { 256.80f, -4134.10f, 17.88f },
+    { 229.20f, -4144.80f, 21.16f },
+    { 201.60f, -4155.50f, 22.52f },
+    { 174.00f, -4166.20f, 22.67f },     // TEKLA_ANKLE_STOP
+    { 144.25f, -4177.70f, 31.07f },     // floating from here
+    { 114.50f, -4189.20f, 29.85f },
+    {  84.75f, -4200.70f, 33.24f },
+    {  63.50f, -4209.00f, 48.00f },
+    {  55.00f, -4212.20f, 44.00f },
+};
+
+size_t const TEKLA_WATER_STOP = 8;
+size_t const TEKLA_ANKLE_STOP = 13;
+size_t const TEKLA_ROUTE_SIZE = sizeof(TeklaRoute) / sizeof(TeklaRoute[0]);
+float const TEKLA_FLOAT_HEIGHT = 9.0f;
+float const TEKLA_ESCORT_RANGE = 60.0f;
+
+// Beside Raggaran, facing him (mop's two Tekla spawns stood here: the escort's end)
+Position const TeklaArrival = { 47.2917f, -4215.24f, 35.0482f, 5.06901f };
+
+// 39325 - Grandmatron Tekla (Spirits Be Praised 25189)
+// Sourced (Wowhead 2010-11-24 [+12] with every line, 2011-06-04, 2012-05-05 [+9], 2012-10-04 [+7], 2011-02-08 replies,
+// 2010-12-03 [+8], 2013-05-13 [+2]; wiki Notes; Thonk's reward text; the DBC): she waits in the doorway of the flooded hut;
+// accepting starts the escort ("Let us be off then..."), she walks to Raggaran faster than most escorts (template speed_walk
+// 1.4, applied by Creature::UpdateEntry; the float keeps that pace: flight rate 0.5) and
+// fights what comes near; at the second pool she casts Water Walking on herself and the player ("I'm tired of wading..." /
+// "There, isn't that much better?"); near the end she hurts her ankle, yells "Spirits of air!", gets Air Spirit's Boon and
+// floats about 30 ft up for the rest of the way, no longer drawing anything ("summons an elemental spirit": 73889 carries
+// SpellVisual 8206, which the client plays on her while the aura is on; the visual DBCs are not extracted here, so what it
+// shows is not checked); at Raggaran "Raggaran, I'm safe." / "Grandmatron...
+// you're alive!". Too far ahead and "she simply turns around and goes home" (2011-06-04): the quest fails. One escort at a
+// time; if she is gone, "wait three to four minutes and she should show up in the hut" (2010-11-24).
+// Ours: the route between the sourced points and the two stops, the 9 yd float and the landing, the 60 yd range, failing on
+// her death or when no escorting player is left near her (gone, dead, too far, or the quest abandoned), the completion for
+// the escorting player and his group members within 60 yd (dead ones too unless released, as Player::GroupEventHappens;
+// searched with the alive check off),
+// the timings of the lines, the walk home on a failure (back along her route, neutral again, no quest mark until she is in the
+// hut), 6 s at Raggaran and a 30 s respawn after the success (the whole cycle about 3-3.5 min), and the restart: a player who
+// holds the quest without an escort (it was taken while she was away) starts one by talking to her at the hut.
+// C++ rather than SmartAI or npc_escortAI: npc_escortAI's JustDied never fails the quest (it requires the jumping state), its
+// evade drops every aura (Water Walking, the Boon) and walks back to the spawn point; SmartAI's escort cannot float her and
+// does not restore the faction. Here an evade keeps her auras and resumes the way from where the fight left her (also checked
+// each second: a creature attacked but never engaged leaves combat without an evade); the faction and quest flag are restored
+// at the hut (the walk home's end, or the respawn after the success or her death: JustAppeared).
+struct npc_durotar_grandmatron_tekla : public ScriptedAI
+{
+    enum class TeklaState { Idle, Escorting, Stopped, Arrived, Returning, Done };
+
+    npc_durotar_grandmatron_tekla(Creature* creature) : ScriptedAI(creature), _state(TeklaState::Idle), _point(0), _homePoint(-1), _floating(false) { }
+
+    void Reset() override
+    {
+        if (_state == TeklaState::Idle)
+            ResetToHut();
+    }
+
+    void JustAppeared() override
+    {
+        ScriptedAI::JustAppeared();
+        _state = TeklaState::Idle;
+        ResetToHut();
+    }
+
+    void OnQuestAccept(Player* player, Quest const* quest) override
+    {
+        if (quest->GetQuestId() == QUEST_SPIRIT_BE_PRAISED && _state == TeklaState::Idle)
+            Start(player);
+    }
+
+    // The quest is in the log but no escort runs (taken while she was on her way with somebody else): talking to her at the hut
+    // starts it
+    bool OnGossipHello(Player* player) override
+    {
+        if (_state != TeklaState::Idle || player->GetQuestStatus(QUEST_SPIRIT_BE_PRAISED) != QUEST_STATUS_INCOMPLETE)
+            return false;
+
+        CloseGossipMenuFor(player);
+        Start(player);
+        return true;
+    }
+
+    void JustEngagedWith(Unit* who) override
+    {
+        ScriptedAI::JustEngagedWith(who);
+        // The leash (Creature::CanCreatureAttack) is measured from the home position: keep it where the fight is
+        if (IsUnderWay())
+            me->SetHomePosition(me->GetPosition());
+    }
+
+    void EnterEvadeMode(EvadeReason why) override
+    {
+        if (!IsUnderWay() && _state != TeklaState::Returning)
+        {
+            ScriptedAI::EnterEvadeMode(why);
+            return;
+        }
+
+        // Keep Water Walking and the Boon (CreatureAI::_EnterEvadeMode drops every aura) and go on from here
+        EngagementOver();
+        me->GetThreatManager().RemoveMeFromThreatLists();
+        me->GetThreatManager().ClearAllThreat();
+        me->CombatStop(true);
+        me->SetLootRecipient(nullptr);
+        me->ResetPlayerDamageReq();
+        if (_state == TeklaState::Escorting)
+            MoveOn();
+        else if (_state == TeklaState::Returning)
+            MoveHome();
+        else
+        {
+            // A fight during a stop: stand there until the stop's timers move her on
+            me->GetMotionMaster()->Clear();
+            me->StopMoving();
+        }
+    }
+
+    void JustDied(Unit* /*killer*/) override
+    {
+        if (IsUnderWay())
+            FailEscort(true);
+        _events.Reset();
+        _state = TeklaState::Done;
+    }
+
+    void MovementInform(uint32 type, uint32 pointId) override
+    {
+        if (type != POINT_MOTION_TYPE)
+            return;
+
+        if (_state == TeklaState::Returning)
+        {
+            if (pointId == POINT_TEKLA_HUT)
+                BackAtHut();
+            else if (_homePoint >= 0 && pointId == uint32(POINT_TEKLA_HOME_ROUTE + _homePoint))
+            {
+                --_homePoint;
+                MoveHome();
+            }
+            return;
+        }
+
+        if (!IsUnderWay())
+            return;
+
+        if (pointId == POINT_TEKLA_RISE)
+        {
+            Talk(SAY_TEKLA_PRESS_ON, GetEscorter());
+            _events.ScheduleEvent(EVENT_TEKLA_FLOAT_ON, 2500ms);
+            return;
+        }
+
+        if (pointId == POINT_TEKLA_LAND)
+        {
+            Arrive();
+            return;
+        }
+
+        if (pointId != POINT_TEKLA_ROUTE + _point)
+            return;
+
+        me->SetHomePosition(me->GetPosition());
+
+        if (_point == TEKLA_WATER_STOP && !me->HasAura(SPELL_TEKLA_WATER_WALKING))
+        {
+            _state = TeklaState::Stopped;
+            Talk(SAY_TEKLA_WADING, GetEscorter());
+            _events.ScheduleEvent(EVENT_TEKLA_WATER_CAST, 3s);
+            return;
+        }
+
+        if (_point == TEKLA_ANKLE_STOP && !_floating)
+        {
+            _state = TeklaState::Stopped;
+            Talk(SAY_TEKLA_ANKLE, GetEscorter());
+            _events.ScheduleEvent(EVENT_TEKLA_AIR_YELL, 4s);
+            return;
+        }
+
+        ++_point;
+        MoveOn();
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        _events.Update(diff);
+        while (uint32 eventId = _events.ExecuteEvent())
+        {
+            switch (eventId)
+            {
+                case EVENT_TEKLA_SET_OFF:
+                    _state = TeklaState::Escorting;
+                    MoveOn();
+                    break;
+                case EVENT_TEKLA_CHECK_ESCORT:
+                    if (IsUnderWay() && !me->IsInCombat() && !AnyEscortNear())
+                    {
+                        FailEscort(false);
+                        break;
+                    }
+                    // Out of combat with no victim and not walking: a fight that ended without an evade (attacked, never
+                    // engaged: CreatureAI.cpp 506-509, 581-582) left her standing; go on
+                    if ((_state == TeklaState::Escorting || _state == TeklaState::Returning) && !me->IsInCombat() && !me->GetVictim()
+                        && me->GetMotionMaster()->GetCurrentMovementGeneratorType() != POINT_MOTION_TYPE)
+                    {
+                        if (_state == TeklaState::Escorting)
+                            MoveOn();
+                        else
+                            MoveHome();
+                    }
+                    _events.ScheduleEvent(EVENT_TEKLA_CHECK_ESCORT, 1s);
+                    break;
+                case EVENT_TEKLA_HOME_TIMEOUT:
+                    // Could not walk home (stuck): put her there
+                    if (_state == TeklaState::Returning)
+                    {
+                        float x, y, z, o;
+                        me->GetRespawnPosition(x, y, z, &o);
+                        me->NearTeleportTo(x, y, z, o);
+                        BackAtHut();
+                    }
+                    break;
+                case EVENT_TEKLA_WATER_CAST:
+                    DoCast(me, SPELL_TEKLA_WATER_WALKING);
+                    _events.ScheduleEvent(EVENT_TEKLA_WATER_BETTER, 2500ms);
+                    break;
+                case EVENT_TEKLA_WATER_BETTER:
+                    // The cast was interrupted (she was hit while casting): the water must still be walkable
+                    if (!me->HasAura(SPELL_TEKLA_WATER_WALKING))
+                        me->CastSpell(me, SPELL_TEKLA_WATER_WALKING, true);
+                    Talk(SAY_TEKLA_BETTER, GetEscorter());
+                    _events.ScheduleEvent(EVENT_TEKLA_WATER_ON, 2500ms);
+                    break;
+                case EVENT_TEKLA_WATER_ON:
+                    _state = TeklaState::Escorting;
+                    ++_point;
+                    MoveOn();
+                    break;
+                case EVENT_TEKLA_AIR_YELL:
+                    Talk(YELL_TEKLA_SPIRITS_OF_AIR, GetEscorter());
+                    me->CastSpell(me, SPELL_TEKLA_AIR_SPIRITS_BOON, true);
+                    // Nothing draws her any more: out of the fight, passive, and no NPC can attack her
+                    _floating = true;
+                    me->SetReactState(REACT_PASSIVE);
+                    me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_NPC);
+                    me->GetThreatManager().RemoveMeFromThreatLists();
+                    me->GetThreatManager().ClearAllThreat();
+                    me->CombatStop(true);
+                    _events.ScheduleEvent(EVENT_TEKLA_RISE, 1500ms);
+                    break;
+                case EVENT_TEKLA_RISE:
+                    // Gravity off before she leaves the ground: once in the air Creature::UpdateMovementFlags keeps it off
+                    // (CanFly through IsFlying), and brings it back when she lands. In the air the spline takes the flight
+                    // speed: rate 0.5 = her walking pace (1.4 x 2.5 yd/s)
+                    me->SetCanFly(true);
+                    me->SetDisableGravity(true);
+                    me->SetSpeed(MOVE_FLIGHT, 0.5f);
+                    me->GetMotionMaster()->MovePoint(POINT_TEKLA_RISE, me->GetPositionX(), me->GetPositionY(), me->GetPositionZ() + TEKLA_FLOAT_HEIGHT, false);
+                    break;
+                case EVENT_TEKLA_FLOAT_ON:
+                    _state = TeklaState::Escorting;
+                    ++_point;
+                    MoveOn();
+                    break;
+                case EVENT_TEKLA_RAGGARAN:
+                    if (Creature* raggaran = me->FindNearestCreature(NPC_RAGGARAN, 30.0f))
+                    {
+                        raggaran->SetFacingToObject(me);
+                        raggaran->AI()->Talk(SAY_RAGGARAN_ALIVE, GetEscorter());
+                    }
+                    break;
+                case EVENT_TEKLA_DESPAWN:
+                    // Back in the hut 30 s later (ours: with the escort's ~3 min, a player finding the hut empty waits about the
+                    // "three to four minutes" of 2010-11-24); ForcedDespawn would add spawntimesecs and the corpse delay
+                    _state = TeklaState::Done;
+                    me->DespawnOrUnsummon();
+                    me->SetRespawnTime(30);
+                    return;
+                default:
+                    break;
+            }
+        }
+
+        if (!UpdateVictim())
+            return;
+
+        DoMeleeAttackIfReady();
+    }
+
+private:
+    bool IsUnderWay() const { return _state == TeklaState::Escorting || _state == TeklaState::Stopped; }
+
+    // Back along her route, from the last point she reached (the last ground point if she was floating), to her spawn
+    void MoveHome()
+    {
+        if (_state != TeklaState::Returning || me->IsInCombat())
+            return;
+
+        // The leash (CanCreatureAttack, from the home position) goes with her, so she can defend herself on the way
+        me->SetHomePosition(me->GetPosition());
+
+        if (_homePoint >= 0)
+        {
+            // Back along the float points first (straight, as she came); from the ankle point on, the ground with pathfinding
+            TeklaRoutePoint const& point = TeklaRoute[_homePoint];
+            me->GetMotionMaster()->MovePoint(POINT_TEKLA_HOME_ROUTE + _homePoint, point.X, point.Y, point.Z, _homePoint < int32(TEKLA_ANKLE_STOP));
+            return;
+        }
+
+        float x, y, z, o;
+        me->GetRespawnPosition(x, y, z, &o);
+        me->GetMotionMaster()->MovePoint(POINT_TEKLA_HUT, x, y, z, true);
+    }
+
+    void BackAtHut()
+    {
+        float x, y, z, o;
+        me->GetRespawnPosition(x, y, z, &o);
+        me->SetHomePosition(x, y, z, o);
+        me->SetFacingTo(o);
+        _state = TeklaState::Idle;
+        ResetToHut();
+    }
+
+    Player* GetEscorter() const { return ObjectAccessor::GetPlayer(*me, _escorterGUID); }
+
+    // The player who started the escort, or a member of his group (his current one while he is here)
+    bool IsOfEscort(Player* player)
+    {
+        if (player->GetGUID() == _escorterGUID)
+            return true;
+
+        if (Player* escorter = GetEscorter())
+            _groupGUID = escorter->GetGroup() ? escorter->GetGroup()->GetGUID() : ObjectGuid::Empty;
+
+        return !_groupGUID.IsEmpty() && player->GetGroup() && player->GetGroup()->GetGUID() == _groupGUID;
+    }
+
+    std::list<Player*> EscortHolders(float range, bool aliveOnly)
+    {
+        // GetPlayerListInGrid skips dead players (AnyPlayerInObjectRangeCheck's reqAlive): search with the alive check off
+        std::list<Player*> players, holders;
+        Trinity::AnyPlayerInObjectRangeCheck check(me, range, false);
+        Trinity::PlayerListSearcher<Trinity::AnyPlayerInObjectRangeCheck> searcher(me, players, check);
+        me->VisitNearbyWorldObject(range, searcher);
+        for (Player* player : players)
+            if (IsOfEscort(player) && (player->IsAlive() || (!aliveOnly && !player->GetCorpse()))
+                && player->GetQuestStatus(QUEST_SPIRIT_BE_PRAISED) == QUEST_STATUS_INCOMPLETE)
+                holders.push_back(player);
+        return holders;
+    }
+
+    bool AnyEscortNear()
+    {
+        return !EscortHolders(TEKLA_ESCORT_RANGE, true).empty();
+    }
+
+    void ResetToHut()
+    {
+        _events.Reset();
+        _escorterGUID.Clear();
+        _groupGUID.Clear();
+        _point = 0;
+        _floating = false;
+
+        me->RestoreFaction();
+        me->ReplaceAllNpcFlags(NPCFlags(me->GetCreatureTemplate()->npcflag));
+        me->SetReactState(REACT_AGGRESSIVE);
+        me->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_NPC);
+        me->RemoveAurasDueToSpell(SPELL_TEKLA_AIR_SPIRITS_BOON);
+        me->SetDisableGravity(false);
+        me->SetCanFly(false);
+        me->SetSpeed(MOVE_FLIGHT, 1.0f);
+        me->SetWalk(true);
+        me->setActive(false, ActiveFlags::Script);
+    }
+
+    void Start(Player* player)
+    {
+        _state = TeklaState::Stopped;
+        _escorterGUID = player->GetGUID();
+        _groupGUID = player->GetGroup() ? player->GetGroup()->GetGUID() : ObjectGuid::Empty;
+        _point = 0;
+        _floating = false;
+
+        // One escort at a time: nobody else can take the quest from her while she is away
+        me->ReplaceAllNpcFlags(UNIT_NPC_FLAG_NONE);
+        me->SetFaction(FACTION_TEKLA_ESCORT);
+        me->SetReactState(REACT_AGGRESSIVE);
+        me->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_NPC);
+        me->SetWalk(true);
+        me->setActive(true, ActiveFlags::Script);
+        me->SetFacingToObject(player);
+        Talk(SAY_TEKLA_START, player);
+
+        _events.Reset();
+        _events.ScheduleEvent(EVENT_TEKLA_SET_OFF, 3s);
+        _events.ScheduleEvent(EVENT_TEKLA_CHECK_ESCORT, 1s);
+    }
+
+    void MoveOn()
+    {
+        if (_state != TeklaState::Escorting || me->IsInCombat())
+            return;
+
+        if (_point >= TEKLA_ROUTE_SIZE)
+        {
+            // Down beside Raggaran
+            me->GetMotionMaster()->MovePoint(POINT_TEKLA_LAND, TeklaArrival.GetPositionX(), TeklaArrival.GetPositionY(), TeklaArrival.GetPositionZ(), false);
+            return;
+        }
+
+        TeklaRoutePoint const& point = TeklaRoute[_point];
+        me->GetMotionMaster()->MovePoint(POINT_TEKLA_ROUTE + _point, point.X, point.Y, point.Z, !_floating);
+    }
+
+    void Arrive()
+    {
+        _state = TeklaState::Arrived;
+        _events.CancelEvent(EVENT_TEKLA_CHECK_ESCORT);
+
+        me->SetDisableGravity(false);
+        me->SetCanFly(false);
+        me->SetFacingTo(TeklaArrival.GetOrientation());
+        Talk(SAY_TEKLA_SAFE, GetEscorter());
+
+        // The escorting player and his group members within 60 yd who still hold the quest (SpecialFlags 2: the event); a dead
+        // one who has not released is credited too, as Player::GroupEventHappens does
+        for (Player* player : EscortHolders(TEKLA_ESCORT_RANGE, false))
+            player->AreaExploredOrEventHappens(QUEST_SPIRIT_BE_PRAISED);
+
+        _events.ScheduleEvent(EVENT_TEKLA_RAGGARAN, 3s);
+        _events.ScheduleEvent(EVENT_TEKLA_DESPAWN, 6s);
+    }
+
+    // The quest fails for the escorting player and his group members nearby who hold it. Unless she died, she turns round and
+    // walks home along her route ("she simply turns around and goes home", 2011-06-04): neutral again (faction 29: nothing
+    // attacks her or is attacked), no quest mark until she is in the hut, where she takes the quest again at once
+    void FailEscort(bool died)
+    {
+        for (Player* player : EscortHolders(200.0f, false))
+            player->FailQuest(QUEST_SPIRIT_BE_PRAISED);
+
+        _events.Reset();
+        _escorterGUID.Clear();
+        _groupGUID.Clear();
+
+        if (died)
+        {
+            _state = TeklaState::Done;
+            return;
+        }
+
+        _state = TeklaState::Returning;
+        me->RemoveAurasDueToSpell(SPELL_TEKLA_AIR_SPIRITS_BOON);
+        me->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_NPC);
+        me->RestoreFaction();
+        me->SetReactState(REACT_DEFENSIVE);
+        me->GetThreatManager().ClearAllThreat();
+        me->CombatStop(true);
+        // From the last point she reached; a failure while floating goes back over the float points she came by (over the roof
+        // below Raggaran's spot) down to the ankle point, where Creature::UpdateMovementFlags gives gravity back; a failure in
+        // the rise (still at the ankle point) descends straight to the point before it (PathGenerator's flying shortcut)
+        _homePoint = _point ? int32(std::min<size_t>(_point - 1, TEKLA_ROUTE_SIZE - 1)) : -1;
+        _floating = false;
+        me->SetSpeed(MOVE_FLIGHT, 0.5f);
+        _events.ScheduleEvent(EVENT_TEKLA_CHECK_ESCORT, 1s);
+        _events.ScheduleEvent(EVENT_TEKLA_HOME_TIMEOUT, 300s);
+        MoveHome();
+    }
+
+    EventMap _events;
+    ObjectGuid _escorterGUID;
+    ObjectGuid _groupGUID;
+    TeklaState _state;
+    size_t _point;
+    int32 _homePoint;
+    bool _floating;
+};
+
 const Position questPos[6] =
 {
     // Jailor 1
@@ -1897,6 +2437,7 @@ void AddSC_durotar()
     new npc_ji_firepaw_horde_way_quest();
     new creature_script<npc_trial_challengers>("npc_trial_challengers");
     new quest_durotar_watershed_patrol();
+    new creature_script<npc_durotar_grandmatron_tekla>("npc_durotar_grandmatron_tekla");
     new creature_script<npc_darkspear_jailor>("npc_darkspear_jailor");
     new creature_script<npc_captive_pitescale_scout>("npc_captive_pitescale_scout");
     new spell_voodoo();
