@@ -26,6 +26,7 @@
 #include "Player.h"
 #include "SpellInfo.h"
 #include "CreatureTextMgr.h"
+#include <set>
 
 /*######
 ## Quest 25134: Lazy Peons
@@ -34,8 +35,6 @@
 
 enum eYells
 {
-    SAY_SPELL_HIT,
-
     SAY_INTRO = 0,
     SAY_SPECIAL_1,
     SAY_SPECIAL_2,
@@ -63,8 +62,6 @@ enum eYells
 
 enum eSpells
 {
-    SPELL_BUFF_SLEEP                 = 17743,
-    SPELL_AWAKEN_PEON                = 19938,
     SPELL_SUMMON_GARROSH_JI          = 121139,
     SPELL_SUMMON_JI                  = 120749,
                                      
@@ -98,11 +95,6 @@ enum eQuests
     QUEST_SPIRIT_BE_PRAISED            = 25189, // trigger kc1
     QUEST_RAGGARANS_FURY               = 25192, // trigger kc2
     QUEST_THATS_THE_END_OF_THIS_RAPTOR = 25195, // trigger kc4
-};
-
-enum eGameObjects
-{
-    GO_LUMBERPILE = 175784,
 };
 
 enum eCreatures
@@ -174,70 +166,260 @@ const std::map<uint32, uint32> watershedMatchType =
     { QUEST_THATS_THE_END_OF_THIS_RAPTOR, NPC_WATERSHED_PATROL_KC4 },
 };
 
-class npc_lazy_peon : public CreatureScript
+enum LazyPeon
 {
-    public:
-        npc_lazy_peon() : CreatureScript("npc_lazy_peon") { }
+    SAY_PEON_AWOKEN             = 0,       // creature_text 10556 group 0: four lines, Sound 7514
+    SPELL_PEON_SLEEPING         = 17743,   // root + sleep visual; 120 s in the DBC, kept on for as long as he sleeps
+    SPELL_AWAKEN_PEON           = 19938,   // Foreman's Blackjack; Spell::CheckCast only lets it hit a peon with 17743
+    GO_LUMBERPILE               = 175784,
 
-        CreatureAI* GetAI(Creature* creature) const override
+    POINT_PEON_PILE             = 1,
+    POINT_PEON_HOME             = 2,
+
+    EVENT_PEON_STOP_WORK        = 1,
+    EVENT_PEON_PILE_TIMEOUT,
+    EVENT_PEON_HOME_TIMEOUT,
+    EVENT_PEON_KEEP_ASLEEP
+};
+
+// 10556 - Lazy Peon (Lazy Peons 25134)
+// Sourced: the peons sleep under the valley's trees; the Foreman's Blackjack wakes one (credit, one of four lines with the
+// "boink" Sound 7514: TDB 4.4.2 / 12.1.0 creature_text), he goes back to work at the wood pile and falls asleep again about
+// 1 min 20 s after the wake (Wowhead 2009-08-08 "they go to sleep 1min and 20secs after you wake them up"; wiki "a minute or
+// two"). An awake peon cannot be hit ("wait for him to fall asleep", 2014-03-31; Spell.cpp's 17743 check).
+// Ours: he walks (not runs) to the nearest pile within 20 yd, chops there for 80 s, walks back and sleeps at his spawn;
+// without a pile he chops where he stands. A peon nobody wakes stays asleep: the wiki's cycle and the 2014 comment are read
+// as peons other players woke (the 2009 comment ties the timing to the wake, no source shows a peon waking on his own, and
+// the other reading is the grindier one). 17743 lasts 120 s in the DBC: the script keeps it on while he sleeps.
+struct npc_lazy_peon : public ScriptedAI
+{
+    enum class PeonState { Asleep, ToPile, Chopping, ToHome, Fighting };
+
+    npc_lazy_peon(Creature* creature) : ScriptedAI(creature), _state(PeonState::Asleep) { }
+
+    void Reset() override
+    {
+        _events.Reset();
+        me->SetEmoteState(EMOTE_ONESHOT_NONE);
+
+        // After an evade (EnterEvadeMode below) he is on his way home and falls asleep there (JustReachedHome); otherwise
+        // (spawn, respawn) he sleeps where he is: his spawn point
+        if (me->HasUnitState(UNIT_STATE_EVADE))
+            _state = PeonState::ToHome;
+        else
+            FallAsleep();
+    }
+
+    void JustAppeared() override
+    {
+        ScriptedAI::JustAppeared();
+        FallAsleep();
+    }
+
+    void SpellHit(Unit* caster, SpellInfo const* spell) override
+    {
+        if (spell->Id != SPELL_AWAKEN_PEON)
+            return;
+
+        Player* player = caster->ToPlayer();
+        if (!player || player->GetQuestStatus(QUEST_LAZY_PEONS) != QUEST_STATUS_INCOMPLETE)
+            return;
+
+        // A sleeping peon wakes and credits. A second player's Blackjack that passed CheckCast while he still slept (the hits
+        // land in the same moment, within 1 s of the wake, whether he is walking to a pile or, without one, already chopping)
+        // credits that player too (ours: he hit a sleeping peon, and it is the
+        // less grindy reading); later hits on the awake peon cannot be cast at all (Spell.cpp's 17743 check)
+        if (_state == PeonState::Asleep)
         {
-            return new npc_lazy_peonAI(creature);
+            _wakeTime = getMSTime();
+            _wokenBy.clear();
+        }
+        else if ((_state != PeonState::ToPile && _state != PeonState::Chopping) || getMSTimeDiff(_wakeTime, getMSTime()) > 1000)
+            return;
+
+        if (!_wokenBy.insert(player->GetGUID()).second)
+            return;
+
+        player->KilledMonsterCredit(me->GetEntry(), me->GetGUID());
+        Talk(SAY_PEON_AWOKEN, player);
+
+        if (_state == PeonState::Asleep)
+        {
+            me->RemoveAurasDueToSpell(SPELL_PEON_SLEEPING);
+            GoToPile();
+        }
+    }
+
+    void MovementInform(uint32 type, uint32 pointId) override
+    {
+        if (type != POINT_MOTION_TYPE)
+            return;
+
+        if (pointId == POINT_PEON_PILE && _state == PeonState::ToPile)
+            StartChopping();
+        else if (pointId == POINT_PEON_HOME && _state == PeonState::ToHome)
+            FallAsleep();
+    }
+
+    void JustEngagedWith(Unit* who) override
+    {
+        ScriptedAI::JustEngagedWith(who);
+
+        // Attacked (an Alliance player: faction 29): he wakes and fights back
+        _state = PeonState::Fighting;
+        _events.Reset();
+        me->SetEmoteState(EMOTE_ONESHOT_NONE);
+        me->RemoveAurasDueToSpell(SPELL_PEON_SLEEPING);
+    }
+
+    // _EnterEvadeMode reloads the template addon, whose 17743 roots him: HomeMovementGenerator does not move a rooted unit and
+    // "arrives" where he stands. Take the root off so he walks home, then sleeps there (JustReachedHome)
+    void EnterEvadeMode(EvadeReason why) override
+    {
+        if (!_EnterEvadeMode(why))
+            return;
+
+        me->RemoveAurasDueToSpell(SPELL_PEON_SLEEPING);
+        me->AddUnitState(UNIT_STATE_EVADE);
+        me->GetMotionMaster()->MoveTargetedHome();
+        Reset();
+    }
+
+    void JustReachedHome() override
+    {
+        FallAsleep();
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        _events.Update(diff);
+        while (uint32 eventId = _events.ExecuteEvent())
+        {
+            switch (eventId)
+            {
+                case EVENT_PEON_PILE_TIMEOUT:
+                    // No way to the pile: work where he is
+                    if (_state == PeonState::ToPile)
+                        StartChopping();
+                    break;
+                case EVENT_PEON_STOP_WORK:
+                    if (_state == PeonState::Chopping)
+                        GoHome();
+                    break;
+                case EVENT_PEON_HOME_TIMEOUT:
+                    if (_state == PeonState::ToHome)
+                    {
+                        Position const& home = me->GetHomePosition();
+                        me->NearTeleportTo(home.GetPositionX(), home.GetPositionY(), home.GetPositionZ(), home.GetOrientation());
+                        FallAsleep();
+                    }
+                    break;
+                case EVENT_PEON_KEEP_ASLEEP:
+                    KeepAsleep();
+                    _events.ScheduleEvent(EVENT_PEON_KEEP_ASLEEP, 5s);
+                    break;
+                default:
+                    break;
+            }
         }
 
-        struct npc_lazy_peonAI : public ScriptedAI
+        if (!UpdateVictim())
+            return;
+
+        DoMeleeAttackIfReady();
+    }
+
+private:
+    void FallAsleep()
+    {
+        _state = PeonState::Asleep;
+        _events.Reset();
+        me->SetEmoteState(EMOTE_ONESHOT_NONE);
+
+        if (!me->IsInWorld())
+            return;
+
+        if (me->GetExactDist2d(me->GetHomePosition()) < 1.0f)
+            me->SetFacingTo(me->GetHomePosition().GetOrientation());
+
+        KeepAsleep();
+        _events.ScheduleEvent(EVENT_PEON_KEEP_ASLEEP, 5s);
+    }
+
+    // The sleep aura on, and without its 120 s end: an untouched peon stays asleep
+    void KeepAsleep()
+    {
+        if (_state != PeonState::Asleep || me->IsInCombat())
+            return;
+
+        Aura* sleep = me->GetAura(SPELL_PEON_SLEEPING);
+        if (!sleep)
+            sleep = me->AddAura(SPELL_PEON_SLEEPING, me);
+        if (sleep && sleep->GetMaxDuration() != -1)
         {
-            npc_lazy_peonAI(Creature* creature) : ScriptedAI(creature) { }
+            sleep->SetMaxDuration(-1);
+            sleep->SetDuration(-1);
+        }
+    }
 
-            ObjectGuid PlayerGUID;
+    void GoToPile()
+    {
+        _events.Reset();
+        _state = PeonState::ToPile;
+        me->SetWalk(true);
 
-            uint32 RebuffTimer;
-            bool work;
+        if (GameObject* pile = me->FindNearestGameObject(GO_LUMBERPILE, 20.0f))
+        {
+            _pileGUID = pile->GetGUID();
+            // Beside the pile, on the side he comes from
+            float angle = pile->GetAngle(me);
+            me->GetMotionMaster()->MovePoint(POINT_PEON_PILE, pile->GetPositionX() + 1.5f * std::cos(angle),
+                pile->GetPositionY() + 1.5f * std::sin(angle), pile->GetPositionZ());
+            _events.ScheduleEvent(EVENT_PEON_PILE_TIMEOUT, 20s);
+        }
+        else
+        {
+            _pileGUID.Clear();
+            StartChopping();
+        }
+    }
 
-            void Reset() override
-            {
-                PlayerGUID = ObjectGuid::Empty;
-                RebuffTimer = 0;
-                work = false;
-            }
+    void StartChopping()
+    {
+        _events.Reset();
+        _state = PeonState::Chopping;
+        me->StopMoving();
 
-            void MovementInform(uint32 /*type*/, uint32 id) override
-            {
-                if (id == 1)
-                    work = true;
-            }
+        if (GameObject* pile = ObjectAccessor::GetGameObject(*me, _pileGUID))
+            me->SetFacingToObject(pile);
 
-            void SpellHit(Unit* caster, const SpellInfo* spell) override
-            {
-                if (spell->Id != SPELL_AWAKEN_PEON)
-                    return;
+        // The looping chop (emote state 234), set once: the old script sent the one-shot 466 on every AI tick, asleep or not
+        me->SetEmoteState(EMOTE_STATE_WORK_CHOPWOOD);
+        _events.ScheduleEvent(EVENT_PEON_STOP_WORK, 80s);
+    }
 
-                Player* player = caster->ToPlayer();
-                if (player && player->GetQuestStatus(QUEST_LAZY_PEONS) == QUEST_STATUS_INCOMPLETE)
-                {
-                    player->KilledMonsterCredit(me->GetEntry(), me->GetGUID());
-                    Talk(SAY_SPELL_HIT, caster);
-                    me->RemoveAllAuras();
-                    if (GameObject* Lumberpile = me->FindNearestGameObject(GO_LUMBERPILE, 20))
-                        me->GetMotionMaster()->MovePoint(1, Lumberpile->GetPositionX() - 1, Lumberpile->GetPositionY(), Lumberpile->GetPositionZ());
-                }
-            }
+    void GoHome()
+    {
+        _events.Reset();
+        _state = PeonState::ToHome;
+        me->SetEmoteState(EMOTE_ONESHOT_NONE);
 
-            void UpdateAI(uint32 diff) override
-            {
-                if (work == true)
-                    me->HandleEmoteCommand(EMOTE_ONESHOT_WORK_CHOPWOOD);
-                if (RebuffTimer <= diff)
-                {
-                    DoCast(me, SPELL_BUFF_SLEEP);
-                    RebuffTimer = 300000; //Rebuff agian in 5 minutes
-                }
-                else
-                    RebuffTimer -= diff;
-                if (!UpdateVictim())
-                    return;
-                DoMeleeAttackIfReady();
-            }
-        };
+        if (me->GetExactDist2d(me->GetHomePosition()) < 1.0f)
+        {
+            FallAsleep();
+            return;
+        }
+
+        me->SetWalk(true);
+        me->GetMotionMaster()->MovePoint(POINT_PEON_HOME, me->GetHomePosition());
+        _events.ScheduleEvent(EVENT_PEON_HOME_TIMEOUT, 30s);
+    }
+
+    EventMap _events;
+    ObjectGuid _pileGUID;
+    PeonState _state;
+    uint32 _wakeTime = 0;
+    std::set<ObjectGuid> _wokenBy;
 };
 
 // Garrosh Hellscream warchief 39605
@@ -1279,7 +1461,7 @@ class AreaTrigger_at_ring_of_valor_entrance : public AreaTriggerScript
 
 void AddSC_durotar()
 {
-    new npc_lazy_peon();
+    new creature_script<npc_lazy_peon>("npc_lazy_peon");
     new npc_garrosh_hellscream_warchief();
     new npc_garrosh_horde_way_quest();
     new npc_ji_firepaw_horde_way_quest();
