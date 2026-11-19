@@ -1,0 +1,5 @@
+-- Raggaran's (39326) reward texts for Raggaran's Rage (25190) and Raggaran's Fury (25192) had lost their stage directions and paragraph breaks
+-- (both began with a space). Sourced: both TDBs verbatim, with their talk emote (Emote1 1); comment 2010-11-23 [+13] quotes the directions.
+-- enUS only; the koKR locale rows already carry them.
+UPDATE `quest_offer_reward` SET `Emote1` = 1, `RewardText` = '<Raggaran appears to have calmed down a bit since your last encounter.>$b$bGood, good.  One step closer to eliminating those beady-eyed, basket-wearing, hog-nosed, two-toed...$b$b<Raggaran''s anger is clearly rising again.>$b$b...hunchbacked, squealing, prickly... no-good... gnome-loving... GREEEAAAAGH!  Quilboar!' WHERE `ID` = 25190;
+UPDATE `quest_offer_reward` SET `Emote1` = 1, `RewardText` = '<Again, Raggaran appears calmer.>$b$bYou''ve done well, stranger.$b$bI''m sorry you had to see me like that.  Thank you for killing the quilboar, but maybe you should leave before I fly into another one of my rages.' WHERE `ID` = 25192;
