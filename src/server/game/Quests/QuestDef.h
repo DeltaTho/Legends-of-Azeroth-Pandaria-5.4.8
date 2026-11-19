@@ -151,7 +151,7 @@ enum QuestFlags : uint32
     QUEST_FLAGS_DISPLAY_ITEM_IN_TRACKER     = 0x00020000,   // Displays usable item in quest tracker
     QUEST_FLAGS_DISPLAY_COMPLETION_TEXT     = 0x00040000,   // use Objective text as Complete text
     QUEST_FLAGS_AUTO_ACCEPT                 = 0x00080000,   // The client recognizes this flag as auto-accept. However, NONE of the current quests (3.3.5a) have this flag. Maybe blizz used to use it, or will use it in the future.
-    QUEST_FLAGS_AUTO_SUBMIT                 = 0x00100000,   // Quests with this flag player submit automatically by special button in player gui
+    QUEST_FLAGS_PLAYER_CAST_ACCEPT          = 0x00100000,   // Player Cast on Accept (TrinityCore): the player, not the giver, casts SourceSpellID; casts nothing itself
     QUEST_FLAGS_AUTO_TAKE                   = 0x00200000,   // Automatically suggestion of accepting quest. Not from npc.
     QUEST_FLAGS_WELL_KNOWN                  = 0x04000000,   // Well-Known
     QUEST_FLAGS_PORTRAIT_IN_QUEST_LOG       = 0x08000000,   // Portrait from Log
