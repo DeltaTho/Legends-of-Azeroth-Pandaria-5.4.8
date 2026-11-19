@@ -4259,6 +4259,22 @@ void ObjectMgr::BuildPlayerLevelInfo(uint8 race, uint8 _class, uint8 level, Play
     }
 }
 
+// True when the quest is a breadcrumb leading to targetId, directly or through further breadcrumbs.
+static bool IsBreadcrumbLeadingTo(Quest const* quest, uint32 targetId)
+{
+    // a longer chain is a loop, which LoadQuests reports and breaks
+    for (uint32 step = 0; quest && step < 32; ++step)
+    {
+        uint32 next = std::abs(quest->GetBreadcrumbForQuestId());
+        if (!next)
+            return false;
+        if (next == targetId)
+            return true;
+        quest = sObjectMgr->GetQuestTemplate(next);
+    }
+    return false;
+}
+
 void ObjectMgr::LoadQuests()
 {
     uint32 oldMSTime = getMSTime();
@@ -4351,8 +4367,8 @@ void ObjectMgr::LoadQuests()
         { "ID, MaxLevel, AllowableClasses, SourceSpellID, PrevQuestID, NextQuestID, ExclusiveGroup, RewardMailTemplateID, RewardMailDelay,"
          // 9               10                   11                     12                     13                   14                   15                 16
          " RequiredSkillID, RequiredSkillPoints, RequiredMinRepFaction, RequiredMaxRepFaction, RequiredMinRepValue, RequiredMaxRepValue, ProvidedItemCount, SpecialFlags,"
-         // 17
-         " ScriptName",                                                                                                                                                    "quest_template_addon", "",                                       "template addons",     &Quest::LoadQuestTemplateAddon },
+         // 17           18
+         " ScriptName, BreadcrumbForQuestId",                                                                                                                              "quest_template_addon", "",                                       "template addons",     &Quest::LoadQuestTemplateAddon },
 
         // 0           1      2        3         4            5          6         7
         { "qo.QuestID, qo.ID, qo.Type, qo.Index, qo.ObjectID, qo.Amount, qo.Flags, qo.Description",                                                                        "quest_objective qo",  "ORDER BY qo.Index ASC",                   "quest objectives",    &Quest::LoadQuestObjective     },
@@ -4381,6 +4397,35 @@ void ObjectMgr::LoadQuests()
     }
 
     std::map<uint32, uint32> usedMailTemplates;
+
+    // Breadcrumbs (quest_template_addon.BreadcrumbForQuestId, as in TrinityCore): a breadcrumb only leads to its target. It is offered
+    // only while the target could be taken, and the target is not offered while the breadcrumb is in the log; the target never
+    // requires it. A breadcrumb must not also unlock its target: its own NextQuestID or the target's PrevQuestID pointing back at it
+    // would make each wait for the other, so those links are dropped below with an error.
+    for (auto& questPair : _questTemplates)
+    {
+        if (DisableMgr::IsDisabledFor(DISABLE_TYPE_QUEST, questPair.first, nullptr))
+            continue;
+
+        Quest* qinfo = questPair.second;
+        uint32 targetId = std::abs(qinfo->_breadcrumbForQuestId);
+        if (!targetId)
+            continue;
+
+        if (targetId == qinfo->GetQuestId() || _questTemplates.find(targetId) == _questTemplates.end())
+        {
+            TC_LOG_ERROR("sql.sql", "Quest %u is a breadcrumb for quest %u, but no such quest exists (or it is itself), set to 0.", qinfo->GetQuestId(), targetId);
+            qinfo->_breadcrumbForQuestId = 0;
+            continue;
+        }
+
+        if (qinfo->_nextQuestID)
+            TC_LOG_ERROR("sql.sql", "Quest %u is a breadcrumb for quest %u and should not unlock quest %u (NextQuestID)%s.", qinfo->GetQuestId(), targetId,
+                qinfo->_nextQuestID, IsBreadcrumbLeadingTo(qinfo, qinfo->_nextQuestID) ? ", link ignored" : "");
+
+        if (qinfo->_exclusiveGroup)
+            TC_LOG_ERROR("sql.sql", "Quest %u is a breadcrumb for quest %u and is in exclusive group %i.", qinfo->GetQuestId(), targetId, qinfo->_exclusiveGroup);
+    }
 
     // Post processing
     for (auto& questPair : _questTemplates)
@@ -4941,6 +4986,11 @@ void ObjectMgr::LoadQuests()
             auto prevQuestItr = _questTemplates.find(prevQuestId);
             if (prevQuestItr == _questTemplates.end())
                 TC_LOG_ERROR("sql.sql", "Quest %d has PrevQuestId %i, but no such quest", qinfo->GetQuestId(), qinfo->GetPrevQuestId());
+            else if (IsBreadcrumbLeadingTo(prevQuestItr->second, qinfo->GetQuestId()))
+            {
+                TC_LOG_ERROR("sql.sql", "Quest %u has PrevQuestId %i, but that quest is a breadcrumb leading to it; PrevQuestId ignored.", qinfo->GetQuestId(), qinfo->GetPrevQuestId());
+                qinfo->_prevQuestID = 0;
+            }
             else if (qinfo->_prevQuestID > 0)
                 qinfo->DependentPreviousQuests.push_back(prevQuestId);
         }
@@ -4950,7 +5000,7 @@ void ObjectMgr::LoadQuests()
             auto nextQuestItr = _questTemplates.find(nextQuestId);
             if (nextQuestItr == _questTemplates.end())
                 TC_LOG_ERROR("sql.sql", "Quest %d has NextQuestId %i, but no such quest", qinfo->GetQuestId(), qinfo->GetNextQuestId());
-            else
+            else if (!IsBreadcrumbLeadingTo(qinfo, nextQuestId))  // logged above
                 nextQuestItr->second->DependentPreviousQuests.push_back(qinfo->GetQuestId());
         }
 
@@ -4959,6 +5009,47 @@ void ObjectMgr::LoadQuests()
 
         if (qinfo->_limitTime)
             qinfo->SetSpecialFlag(QUEST_SPECIAL_FLAGS_TIMED);
+    }
+
+    // Break breadcrumb loops first, disabled quests included (a loop would hide its quests for good, and Player::CanTakeQuest would
+    // follow it without end if one of them were enabled again by `.reload disables`), then tell every target its breadcrumbs, the ones
+    // leading to it through another breadcrumb included.
+    for (auto& questPair : _questTemplates)
+    {
+        Quest* qinfo = questPair.second;
+        std::set<uint32> visited = { qinfo->GetQuestId() };
+        for (Quest const* step = qinfo; step && step->GetBreadcrumbForQuestId(); step = GetQuestTemplate(std::abs(step->GetBreadcrumbForQuestId())))
+        {
+            uint32 nextId = std::abs(step->GetBreadcrumbForQuestId());
+            if (!visited.insert(nextId).second)
+            {
+                // a loop further on is broken when one of its own quests comes up here
+                if (nextId == qinfo->GetQuestId())
+                {
+                    TC_LOG_ERROR("sql.sql", "Breadcrumb quest %u leads back to itself (BreadcrumbForQuestId loop), set to 0.", qinfo->GetQuestId());
+                    qinfo->_breadcrumbForQuestId = 0;
+                }
+                break;
+            }
+        }
+    }
+
+    for (auto& questPair : _questTemplates)
+    {
+        if (DisableMgr::IsDisabledFor(DISABLE_TYPE_QUEST, questPair.first, nullptr))
+            continue;
+
+        Quest* qinfo = questPair.second;
+        std::set<uint32> visited = { qinfo->GetQuestId() };
+        for (uint32 targetId = std::abs(qinfo->_breadcrumbForQuestId); targetId && visited.insert(targetId).second; )
+        {
+            auto targetItr = _questTemplates.find(targetId);
+            if (targetItr == _questTemplates.end())
+                break;
+
+            targetItr->second->DependentBreadcrumbQuests.push_back(qinfo->GetQuestId());
+            targetId = std::abs(targetItr->second->_breadcrumbForQuestId);
+        }
     }
 
     // check QUEST_SPECIAL_FLAGS_EXPLORATION_OR_EVENT for spell with SPELL_EFFECT_QUEST_COMPLETE
