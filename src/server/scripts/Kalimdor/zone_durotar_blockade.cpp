@@ -17,6 +17,7 @@
 
 /* Durotar: the Dranosh'ar Blockade and the north
  *
+ * Thunder Down Under (25236)      a laborer on the shore hauls the tethered Drowned Thunder Lizard out
  * Skull Rock (25262)    the Burning Blade cultists outside the cave survive the 5.4 Kor'kron, so players still get their kills
  *
  * The rest of Durotar's scripts are in zone_durotar.cpp.
@@ -24,6 +25,7 @@
 
 #include "ScriptMgr.h"
 #include "ScriptedCreature.h"
+#include "SpellScript.h"
 #include "SmartAI.h"
 
 namespace
@@ -110,9 +112,109 @@ private:
     uint32 _tagCheckTimer = 1000;
 };
 
+enum ThunderDownUnder
+{
+    NPC_DROWNED_THUNDER_LIZARD          = 39464,
+    NPC_HULKING_ORCISH_LABORER          = 39465,
+    SPELL_LIFT_DROWNED_LIZARD_EFFECT    = 73951,
+    DATA_LIZARD_HAULED                  = 1
+};
+
+// Ours: the nearest dry ground to each of the 19 lizard spawns of the Thunder Ridge lake (ground.py over the 5.4.8 maps: the
+// first point at least 3 yd onto land at the water's level, 17.9; the lizards lie 11-31 yd under it, 12-40 yd from these points)
+Position const ThunderRidgeShore[] =
+{
+    { 713.0f, -4018.0f, 19.20f }, { 829.1f, -4008.2f, 22.29f }, { 758.0f, -4045.2f, 23.11f }, { 902.9f, -4140.2f, 19.05f },
+    { 988.2f, -4177.1f, 19.48f }, { 916.3f, -4256.7f, 20.63f }, { 948.9f, -3999.6f, 21.02f }, { 985.3f, -4105.6f, 19.22f },
+    { 918.5f, -4117.9f, 22.51f }, { 913.6f, -4201.4f, 19.75f }, { 997.9f, -4046.0f, 22.59f }, { 983.5f, -4281.3f, 21.14f },
+    { 886.0f, -3993.8f, 21.73f }, { 768.9f, -4085.6f, 21.90f }, { 842.9f, -4084.0f, 22.54f }, { 816.9f, -4011.9f, 22.63f },
+    { 840.0f, -4077.2f, 21.13f }, { 865.0f, -4063.5f, 21.88f }, { 918.3f, -4071.6f, 22.19f }
+};
+
+// 73945 - Attach Tether (Thunder Down Under 25236; the player's click on a Drowned Thunder Lizard, cast_flags 1)
+// Sourced: a 1 s cast attaches the rope (2011-08-09 [+8]), a Hulking Orcish Laborer hauls the carcass out and it is gone (npc
+// 39465 [+11]; quest text "I've got grunts that can lift them out"; 2011-11-30 "tether them up to surface"). The spell's summon
+// (effect 0, DEST_NEARBY_ENTRY: the lizard itself, by its source-13 condition) would put the laborer inside the carcass on the
+// lake floor; it is replaced: the laborer stands on the nearest shore point, facing the lizard, and casts the rope (73951, a
+// channelled dummy aura) on it, while the carcass floats up towards him and is gone after 7 s (back in 60 s with its click). The
+// lizard stops discharging once hauled (SmartAI phase 2). The credit is effect 1 (KILL_CREDIT2, unchanged), so it does not
+// depend on any of this. Ours: the shore points, the haul's way and timings.
+class spell_durotar_attach_tether : public SpellScript
+{
+    PrepareSpellScript(spell_durotar_attach_tether);
+
+    void HandleSummon(SpellEffIndex effIndex)
+    {
+        PreventHitDefaultEffect(effIndex);
+
+        Player* caster = GetCaster()->ToPlayer();
+        if (!caster)
+            return;
+
+        // The clicked lizard. The spell has no unit target (Spell::InitExplicitTargets drops the clickee), but a right-click selects
+        // the unit: the player's selection, if it is a lizard within reach. A selected lizard already being hauled (another player
+        // tethered it in the same second) is left alone: both are credited, one laborer. With no lizard selected, the nearest lizard
+        // within 8 yd that can still be clicked
+        Creature* lizard = nullptr;
+        if (Creature* selected = ObjectAccessor::GetCreature(*caster, caster->GetTarget()))
+            if (selected->GetEntry() == NPC_DROWNED_THUNDER_LIZARD && selected->IsWithinDistInMap(caster, 10.0f))
+            {
+                if (!selected->HasFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_SPELLCLICK))
+                    return;
+                lizard = selected;
+            }
+        if (!lizard)
+        {
+            std::list<Creature*> lizards;
+            caster->GetCreatureListWithEntryInGrid(lizards, NPC_DROWNED_THUNDER_LIZARD, 8.0f);
+            for (Creature* candidate : lizards)
+                if (candidate->IsAlive() && candidate->HasFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_SPELLCLICK)
+                    && (!lizard || caster->GetExactDist(candidate) < caster->GetExactDist(lizard)))
+                    lizard = candidate;
+        }
+        if (!lizard)
+            return;
+
+        Position const* shore = &ThunderRidgeShore[0];
+        for (Position const& pos : ThunderRidgeShore)
+            if (lizard->GetExactDist(&pos) < lizard->GetExactDist(shore))
+                shore = &pos;
+
+        lizard->RemoveFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_SPELLCLICK);
+        lizard->InterruptNonMeleeSpells(false);
+        if (lizard->IsAIEnabled)
+            lizard->AI()->SetData(DATA_LIZARD_HAULED, 1);
+
+        // The rope is cast triggered (no cast bar to break) and ignores line of sight (disables 73951, flag 64): a bank between the
+        // shore point and a lizard deep under the water must not leave a man standing on a beach. Passive, so a passing beast does
+        // not draw him into a fight that would cut the channel
+        if (Creature* laborer = caster->SummonCreature(NPC_HULKING_ORCISH_LABORER, *shore, TEMPSUMMON_TIMED_DESPAWN, 9000ms))
+        {
+            laborer->SetReactState(REACT_PASSIVE);
+            laborer->SetFacingToObject(lizard);
+            laborer->CastSpell(lizard, SPELL_LIFT_DROWNED_LIZARD_EFFECT, true);
+        }
+
+        // Up the rope: to 5 yd short of the laborer, straight (gravity off; it is a carcass)
+        float dist = lizard->GetExactDist(shore);
+        float f = dist > 5.0f ? (dist - 5.0f) / dist : 0.0f;
+        lizard->SetDisableGravity(true);
+        lizard->GetMotionMaster()->MovePoint(0, lizard->GetPositionX() + (shore->GetPositionX() - lizard->GetPositionX()) * f,
+            lizard->GetPositionY() + (shore->GetPositionY() - lizard->GetPositionY()) * f,
+            lizard->GetPositionZ() + (shore->GetPositionZ() - lizard->GetPositionZ()) * f, false);
+        lizard->DespawnOrUnsummon(7000);
+    }
+
+    void Register() override
+    {
+        OnEffectHit += SpellEffectFn(spell_durotar_attach_tether::HandleSummon, EFFECT_0, SPELL_EFFECT_SUMMON);
+    }
+};
+
 } // namespace
 
 void AddSC_durotar_blockade()
 {
     new creature_script<npc_durotar_skull_rock_cultist>("npc_durotar_skull_rock_cultist");
+    new spell_script<spell_durotar_attach_tether>("spell_durotar_attach_tether");
 }
