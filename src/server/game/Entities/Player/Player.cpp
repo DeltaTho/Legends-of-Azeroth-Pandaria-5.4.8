@@ -17632,9 +17632,8 @@ QuestGiverStatus Player::GetQuestDialogStatus(Object const* questgiver)
         if (!quest)
             continue;
 
-        if (!sConditionMgr->IsObjectMeetingNotGroupedConditions(CONDITION_SOURCE_TYPE_QUEST_ACCEPT, quest->GetQuestId(), this))
-            continue;
-
+        // No quest-accept (source 19) conditions here: they decide whether a quest may be taken, not whether one in the log may be
+        // handed in (TrinityCore 1106eadac6). The repeatable turn-in below tests them through CanTakeQuest.
         switch (GetQuestStatus(quest_id))
         {
             case QUEST_STATUS_COMPLETE:
