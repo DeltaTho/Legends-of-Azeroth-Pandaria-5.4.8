@@ -2361,6 +2361,88 @@ private:
     }
 };
 
+enum Felblood
+{
+    SPELL_FELBLOOD                  = 80174,
+    SPELL_FEL_INFUSED               = 77647,
+    FELBLOOD_STACKS_FOR_DEMON_FORM  = 5
+};
+
+// Five Felblood stacks (from any Burning Blade, whichever entry cast them, alive or dying; summed over casters:
+// Unit::GetAuraCount) turn the target, player or pet, into a
+// demon: the stacks go and Fel-Infused takes them, transform to 41787 Metamorphosis, 5 % health every 3 s, +25 % critical
+// strike, 60 s (DBC). Run from the target's own event queue, outside the aura code that added the stack
+static void CheckFelInfused(Unit* target)
+{
+    // Players and what they control (pets) only: the sources speak of the player and his pet; Felblood also lands on NPCs in
+    // melee with a cultist (the Kor'kron at Skull Rock), which never become the demon
+    if (target->GetTypeId() != TYPEID_PLAYER && !target->IsControlledByPlayer())
+        return;
+
+    if (!target->IsInWorld() || !target->IsAlive() || target->HasAura(SPELL_FEL_INFUSED))
+        return;
+
+    if (target->GetAuraCount(SPELL_FELBLOOD) < FELBLOOD_STACKS_FOR_DEMON_FORM)
+        return;
+
+    target->RemoveAurasDueToSpell(SPELL_FELBLOOD);
+    target->CastSpell(target, SPELL_FEL_INFUSED, true);
+}
+
+// 80174 - Felblood (The Burning Blade 25232)
+// Sourced: at five stacks you (and your pet) turn into a demon, gaining critical strike and health regeneration for "a minute"
+// (Wowhead 2010-11-24 [+15], 2010-11-25 [+6], 2011-07-10 [+5] and replies on pets; wiki The Burning Blade Notes); "you lost
+// all stacks of Felblood" (2011-07-10). The spell is 77647 Fel-Infused, the only DBC spell with that transform, heal and crit
+// (no TDB row of either dump casts or links it, nor 80174 to it). Ours: the check runs whenever a stack is added and on
+// Felblood's own 3 s periodic dummy (effect 2: no other use is known for it), summing the stacks of every caster.
+class spell_durotar_felblood_aura : public AuraScript
+{
+    PrepareAuraScript(spell_durotar_felblood_aura);
+
+    void ScheduleCheck()
+    {
+        Unit* target = GetTarget();
+        target->m_Events.AddLambdaEventAtOffset([target]() { CheckFelInfused(target); }, 1);
+    }
+
+    void AfterApply(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
+    {
+        ScheduleCheck();
+    }
+
+    void HandlePeriodic(AuraEffect const* /*aurEff*/)
+    {
+        ScheduleCheck();
+    }
+
+    void Register() override
+    {
+        AfterEffectApply += AuraEffectApplyFn(spell_durotar_felblood_aura::AfterApply, EFFECT_2, SPELL_AURA_PERIODIC_DUMMY, AURA_EFFECT_HANDLE_REAL_OR_REAPPLY_MASK);
+        OnEffectPeriodic += AuraEffectPeriodicFn(spell_durotar_felblood_aura::HandlePeriodic, EFFECT_2, SPELL_AURA_PERIODIC_DUMMY);
+    }
+};
+
+// 80174 - Felblood: no Felblood while Fel-Infused ("along with immunity to Felblood", wiki Notes): neither the stack nor its
+// fire damage reaches a demon-form target
+class spell_durotar_felblood : public SpellScript
+{
+    PrepareSpellScript(spell_durotar_felblood);
+
+    void FilterTargets(std::list<WorldObject*>& targets)
+    {
+        targets.remove_if([](WorldObject* target)
+        {
+            Unit* unit = target->ToUnit();
+            return unit && unit->HasAura(SPELL_FEL_INFUSED);
+        });
+    }
+
+    void Register() override
+    {
+        OnObjectAreaTargetSelect += SpellObjectAreaTargetSelectFn(spell_durotar_felblood::FilterTargets, EFFECT_ALL, TARGET_UNIT_SRC_AREA_ENEMY);
+    }
+};
+
 // Shrink 72249
 class spell_shrink : public SpellScript
 {
@@ -2448,6 +2530,8 @@ void AddSC_durotar()
     new creature_script<npc_durotar_watershed_telescope>("npc_durotar_watershed_telescope");
     new player_durotar_watershed();
     new spell_script<spell_shrink>("spell_shrink");
+    new aura_script<spell_durotar_felblood_aura>("spell_durotar_felblood_aura");
+    new spell_script<spell_durotar_felblood>("spell_durotar_felblood");
     new aura_script<spell_teleport_out_blackout>("spell_teleport_out_blackout");
     new AreaTrigger_at_ring_of_valor_entrance();
 }
