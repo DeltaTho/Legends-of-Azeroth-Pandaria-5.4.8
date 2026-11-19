@@ -3549,6 +3549,8 @@ class npc_icc_unsealed_chest_questgiver : public CreatureScript
                 return false;
 
             uint32 delay = 0;
+            // The scenes below run for up to a minute: their lines look the player up again, who may have logged out meanwhile.
+            ObjectGuid const playerGuid = player->GetGUID();
             switch (creature->GetEntry())
             {
                 case NPC_HIGHLORD_DARION_MOGRAINE_QUEST:
@@ -3748,83 +3750,93 @@ class npc_icc_unsealed_chest_questgiver : public CreatureScript
                         default:
                             return false;
                     }
-                    creature->m_Events.Schedule(delay += 5000, [creature]()
+                    // Mograine's Reunion, timed as AzerothCore's action list 3712001: Darion's lines 4-6 (creature_text 37120 has groups
+                    // 0-6) between Alexandros' 0-6. Alexandros is looked up for each line; he is gone if the scene was cut short.
                     {
-                        creature->CastSpell(creature, SPELL_SUMMON_ALEXANDROS, true);
-                        if (Creature* alexandros = creature->FindNearestCreature(NPC_HIGHLORD_ALEXANDROS_MOGRAINE, 20.0f))
+                        auto alexandrosTalk = [creature](uint8 line)
                         {
-                            alexandros->CastSpell(alexandros, 72469, true);
-                            uint32 delay = 0;
-                            alexandros->m_Events.Schedule(delay += 10000, [alexandros]() { alexandros->AI()->Talk(0); });
-                            alexandros->m_Events.Schedule(delay +=  7000, [alexandros]() { alexandros->AI()->Talk(1); });
-                            alexandros->m_Events.Schedule(delay += 14000, [alexandros]() { alexandros->AI()->Talk(2); });
-                            alexandros->m_Events.Schedule(delay += 12000, [alexandros]() { alexandros->AI()->Talk(3); });
-                            alexandros->m_Events.Schedule(delay += 10000, [alexandros]() { alexandros->AI()->Talk(4); });
-                            alexandros->m_Events.Schedule(delay +=  8000, [alexandros]() { alexandros->AI()->Talk(5); });
-                            alexandros->m_Events.Schedule(delay +=  8000, [alexandros]() { alexandros->AI()->Talk(6); });
-                            alexandros->m_Events.Schedule(delay += 19000, [alexandros]() { alexandros->DespawnOrUnsummon(); });
-                        }
-                    });
-                    creature->m_Events.Schedule(delay += 6000, [creature]()
-                    {
-                        if (Creature* alexandros = creature->FindNearestCreature(NPC_HIGHLORD_ALEXANDROS_MOGRAINE, 20.0f))
-                            creature->SetFacingToObject(alexandros);
-                        creature->AI()->Talk(4);
-                    });
-                    creature->m_Events.Schedule(delay += 18000, [creature]() { creature->AI()->Talk(11); });
-                    creature->m_Events.Schedule(delay += 55000, [creature]() { creature->AI()->Talk(12); });
-                    creature->m_Events.Schedule(delay +=  7000, [creature]() { creature->SetFacingTo(creature->GetOriginalOrientation()); });
-                    creature->m_Events.Schedule(delay +=  1000, [creature]() { SetQuestGiverFlag(creature, true); });
+                            if (Creature* alexandros = creature->FindNearestCreature(NPC_HIGHLORD_ALEXANDROS_MOGRAINE, 30.0f))
+                                alexandros->AI()->Talk(line);
+                        };
+                        creature->m_Events.Schedule(delay +=  4000, [creature]()
+                        {
+                            creature->CastSpell(creature, SPELL_SUMMON_ALEXANDROS, true);
+                            if (Creature* alexandros = creature->FindNearestCreature(NPC_HIGHLORD_ALEXANDROS_MOGRAINE, 20.0f))
+                                alexandros->CastSpell(alexandros, 72469, true);
+                        });
+                        creature->m_Events.Schedule(delay +=  6000, [creature]()
+                        {
+                            if (Creature* alexandros = creature->FindNearestCreature(NPC_HIGHLORD_ALEXANDROS_MOGRAINE, 30.0f))
+                                creature->SetFacingToObject(alexandros);
+                            creature->AI()->Talk(4);
+                        });
+                        creature->m_Events.Schedule(delay +=  4000, [alexandrosTalk]() { alexandrosTalk(0); });
+                        creature->m_Events.Schedule(delay +=  6000, [alexandrosTalk]() { alexandrosTalk(1); });
+                        creature->m_Events.Schedule(delay +=  6000, [creature]() { creature->AI()->Talk(5); });
+                        creature->m_Events.Schedule(delay +=  6000, [alexandrosTalk]() { alexandrosTalk(2); });
+                        creature->m_Events.Schedule(delay += 11000, [alexandrosTalk]() { alexandrosTalk(3); });
+                        creature->m_Events.Schedule(delay +=  8000, [alexandrosTalk]() { alexandrosTalk(4); });
+                        creature->m_Events.Schedule(delay +=  8000, [alexandrosTalk]() { alexandrosTalk(5); });
+                        creature->m_Events.Schedule(delay +=  7000, [alexandrosTalk]() { alexandrosTalk(6); });
+                        creature->m_Events.Schedule(delay +=  7000, [creature]() { creature->AI()->Talk(6); });
+                        creature->m_Events.Schedule(delay +=  7000, [creature]() { creature->SetFacingTo(creature->GetOriginalOrientation()); });
+                        creature->m_Events.Schedule(delay +=  3000, [creature]()
+                        {
+                            if (Creature* alexandros = creature->FindNearestCreature(NPC_HIGHLORD_ALEXANDROS_MOGRAINE, 30.0f))
+                                alexandros->DespawnOrUnsummon();
+                            SetQuestGiverFlag(creature, true);
+                        });
+                    }
                     break;
                 case NPC_LADY_JAINA_PROUDMOORE_QUEST:
                     if (quest->GetQuestId() != QUEST_JAINAS_LOCKET)
                         return false;
-                    creature->m_Events.Schedule(delay +=  4000, [creature, player]() { creature->AI()->Talk(0, player); });
-                    creature->m_Events.Schedule(delay +=  4000, [creature, player]() { creature->AI()->Talk(1, player); });
-                    creature->m_Events.Schedule(delay +=  6000, [creature, player]() { creature->AI()->Talk(2, player); });
-                    creature->m_Events.Schedule(delay +=  4000, [creature, player]() { creature->AI()->Talk(3, player); });
-                    creature->m_Events.Schedule(delay += 11000, [creature, player]() { creature->AI()->Talk(4, player); });
-                    creature->m_Events.Schedule(delay +=  6000, [creature, player]() { creature->AI()->Talk(5, player); });
-                    creature->m_Events.Schedule(delay +=  5000, [creature, player]() { SetQuestGiverFlag(creature, true); });
+                    creature->m_Events.Schedule(delay +=  4000, [creature, playerGuid]() { creature->AI()->Talk(0, ObjectAccessor::GetPlayer(*creature, playerGuid)); });
+                    creature->m_Events.Schedule(delay +=  4000, [creature, playerGuid]() { creature->AI()->Talk(1, ObjectAccessor::GetPlayer(*creature, playerGuid)); });
+                    creature->m_Events.Schedule(delay +=  6000, [creature, playerGuid]() { creature->AI()->Talk(2, ObjectAccessor::GetPlayer(*creature, playerGuid)); });
+                    creature->m_Events.Schedule(delay +=  4000, [creature, playerGuid]() { creature->AI()->Talk(3, ObjectAccessor::GetPlayer(*creature, playerGuid)); });
+                    creature->m_Events.Schedule(delay += 11000, [creature, playerGuid]() { creature->AI()->Talk(4, ObjectAccessor::GetPlayer(*creature, playerGuid)); });
+                    creature->m_Events.Schedule(delay +=  6000, [creature, playerGuid]() { creature->AI()->Talk(5, ObjectAccessor::GetPlayer(*creature, playerGuid)); });
+                    creature->m_Events.Schedule(delay +=  5000, [creature]() { SetQuestGiverFlag(creature, true); });
                     break;
                 case NPC_MURADIN_BRONZEBEARD_QUEST:
                     if (quest->GetQuestId() != QUEST_MURADINS_LAMENT)
                         return false;
-                    creature->m_Events.Schedule(delay +=  3000, [creature, player]() { creature->AI()->Talk(0, player); });
-                    creature->m_Events.Schedule(delay +=  4000, [creature, player]() { creature->AI()->Talk(1, player); });
-                    creature->m_Events.Schedule(delay +=  5000, [creature, player]() { creature->AI()->Talk(2, player); });
-                    creature->m_Events.Schedule(delay +=  5000, [creature, player]() { creature->AI()->Talk(3, player); });
-                    creature->m_Events.Schedule(delay +=  6000, [creature, player]() { creature->AI()->Talk(4, player); });
-                    creature->m_Events.Schedule(delay +=  7000, [creature, player]() { creature->AI()->Talk(5, player); });
-                    creature->m_Events.Schedule(delay +=  8000, [creature, player]() { creature->AI()->Talk(6, player); });
-                    creature->m_Events.Schedule(delay +=  6000, [creature, player]() { creature->AI()->Talk(7, player); });
-                    creature->m_Events.Schedule(delay +=  5000, [creature, player]() { SetQuestGiverFlag(creature, true); });
+                    creature->m_Events.Schedule(delay +=  3000, [creature, playerGuid]() { creature->AI()->Talk(0, ObjectAccessor::GetPlayer(*creature, playerGuid)); });
+                    creature->m_Events.Schedule(delay +=  4000, [creature, playerGuid]() { creature->AI()->Talk(1, ObjectAccessor::GetPlayer(*creature, playerGuid)); });
+                    creature->m_Events.Schedule(delay +=  5000, [creature, playerGuid]() { creature->AI()->Talk(2, ObjectAccessor::GetPlayer(*creature, playerGuid)); });
+                    creature->m_Events.Schedule(delay +=  5000, [creature, playerGuid]() { creature->AI()->Talk(3, ObjectAccessor::GetPlayer(*creature, playerGuid)); });
+                    creature->m_Events.Schedule(delay +=  6000, [creature, playerGuid]() { creature->AI()->Talk(4, ObjectAccessor::GetPlayer(*creature, playerGuid)); });
+                    creature->m_Events.Schedule(delay +=  7000, [creature, playerGuid]() { creature->AI()->Talk(5, ObjectAccessor::GetPlayer(*creature, playerGuid)); });
+                    creature->m_Events.Schedule(delay +=  8000, [creature, playerGuid]() { creature->AI()->Talk(6, ObjectAccessor::GetPlayer(*creature, playerGuid)); });
+                    creature->m_Events.Schedule(delay +=  6000, [creature, playerGuid]() { creature->AI()->Talk(7, ObjectAccessor::GetPlayer(*creature, playerGuid)); });
+                    creature->m_Events.Schedule(delay +=  5000, [creature]() { SetQuestGiverFlag(creature, true); });
                     break;
                 case NPC_UTHER_THE_LIGHTBRINGER_QUEST:
                     if (quest->GetQuestId() != QUEST_THE_LIGHTBRINGERS_REDEMPTION)
                         return false;
-                    creature->m_Events.Schedule(delay +=  3000, [creature, player]() { creature->AI()->Talk(0, player); });
-                    creature->m_Events.Schedule(delay +=  4000, [creature, player]() { creature->AI()->Talk(1, player); });
-                    creature->m_Events.Schedule(delay +=  8000, [creature, player]() { creature->AI()->Talk(2, player); });
-                    creature->m_Events.Schedule(delay +=  8000, [creature, player]() { creature->AI()->Talk(3, player); });
-                    creature->m_Events.Schedule(delay +=  9000, [creature, player]() { creature->AI()->Talk(4, player); });
-                    creature->m_Events.Schedule(delay += 12000, [creature, player]() { creature->AI()->Talk(5, player); });
-                    creature->m_Events.Schedule(delay +=  6000, [creature, player]() { creature->AI()->Talk(6, player); });
-                    creature->m_Events.Schedule(delay +=  7000, [creature, player]() { creature->AI()->Talk(7, player); });
-                    creature->m_Events.Schedule(delay +=  6000, [creature, player]() { creature->AI()->Talk(8, player); });
-                    creature->m_Events.Schedule(delay +=  5000, [creature, player]() { SetQuestGiverFlag(creature, true); });
+                    creature->m_Events.Schedule(delay +=  3000, [creature, playerGuid]() { creature->AI()->Talk(0, ObjectAccessor::GetPlayer(*creature, playerGuid)); });
+                    creature->m_Events.Schedule(delay +=  4000, [creature, playerGuid]() { creature->AI()->Talk(1, ObjectAccessor::GetPlayer(*creature, playerGuid)); });
+                    creature->m_Events.Schedule(delay +=  8000, [creature, playerGuid]() { creature->AI()->Talk(2, ObjectAccessor::GetPlayer(*creature, playerGuid)); });
+                    creature->m_Events.Schedule(delay +=  8000, [creature, playerGuid]() { creature->AI()->Talk(3, ObjectAccessor::GetPlayer(*creature, playerGuid)); });
+                    creature->m_Events.Schedule(delay +=  9000, [creature, playerGuid]() { creature->AI()->Talk(4, ObjectAccessor::GetPlayer(*creature, playerGuid)); });
+                    creature->m_Events.Schedule(delay += 12000, [creature, playerGuid]() { creature->AI()->Talk(5, ObjectAccessor::GetPlayer(*creature, playerGuid)); });
+                    creature->m_Events.Schedule(delay +=  6000, [creature, playerGuid]() { creature->AI()->Talk(6, ObjectAccessor::GetPlayer(*creature, playerGuid)); });
+                    creature->m_Events.Schedule(delay +=  7000, [creature, playerGuid]() { creature->AI()->Talk(7, ObjectAccessor::GetPlayer(*creature, playerGuid)); });
+                    creature->m_Events.Schedule(delay +=  6000, [creature, playerGuid]() { creature->AI()->Talk(8, ObjectAccessor::GetPlayer(*creature, playerGuid)); });
+                    creature->m_Events.Schedule(delay +=  5000, [creature]() { SetQuestGiverFlag(creature, true); });
                     break;
                 case NPC_LADY_SYLVANAS_WINDRUNNER_QUEST:
                     if (quest->GetQuestId() != QUEST_SYLVANAS_VENGEANCE)
                         return false;
-                    creature->m_Events.Schedule(delay +=  3000, [creature, player]() { creature->AI()->Talk(0, player); });
-                    creature->m_Events.Schedule(delay +=  4000, [creature, player]() { creature->AI()->Talk(1, player); });
-                    creature->m_Events.Schedule(delay +=  8000, [creature, player]() { creature->AI()->Talk(2, player); });
-                    creature->m_Events.Schedule(delay +=  7000, [creature, player]() { creature->AI()->Talk(3, player); });
-                    creature->m_Events.Schedule(delay +=  8000, [creature, player]() { creature->AI()->Talk(4, player); });
-                    creature->m_Events.Schedule(delay +=  8000, [creature, player]() { creature->AI()->Talk(5, player); });
-                    creature->m_Events.Schedule(delay +=  3000, [creature, player]() { creature->AI()->Talk(6, player); });
-                    creature->m_Events.Schedule(delay +=  5000, [creature, player]() { SetQuestGiverFlag(creature, true); });
+                    creature->m_Events.Schedule(delay +=  3000, [creature, playerGuid]() { creature->AI()->Talk(0, ObjectAccessor::GetPlayer(*creature, playerGuid)); });
+                    creature->m_Events.Schedule(delay +=  4000, [creature, playerGuid]() { creature->AI()->Talk(1, ObjectAccessor::GetPlayer(*creature, playerGuid)); });
+                    creature->m_Events.Schedule(delay +=  8000, [creature, playerGuid]() { creature->AI()->Talk(2, ObjectAccessor::GetPlayer(*creature, playerGuid)); });
+                    creature->m_Events.Schedule(delay +=  7000, [creature, playerGuid]() { creature->AI()->Talk(3, ObjectAccessor::GetPlayer(*creature, playerGuid)); });
+                    creature->m_Events.Schedule(delay +=  8000, [creature, playerGuid]() { creature->AI()->Talk(4, ObjectAccessor::GetPlayer(*creature, playerGuid)); });
+                    creature->m_Events.Schedule(delay +=  8000, [creature, playerGuid]() { creature->AI()->Talk(5, ObjectAccessor::GetPlayer(*creature, playerGuid)); });
+                    creature->m_Events.Schedule(delay +=  3000, [creature, playerGuid]() { creature->AI()->Talk(6, ObjectAccessor::GetPlayer(*creature, playerGuid)); });
+                    creature->m_Events.Schedule(delay +=  5000, [creature]() { SetQuestGiverFlag(creature, true); });
                     break;
                 default:
                     return false;

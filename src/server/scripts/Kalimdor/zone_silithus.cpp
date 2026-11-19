@@ -119,7 +119,9 @@ class npc_highlord_demitrian : public CreatureScript
 
         bool OnQuestReward(Player* player, Creature* creature, Quest const* quest, uint32 /*item*/) override
         {
-            if (quest->GetQuestId() == QUEST_THUNDERAAN_THE_WINDSEEKER)
+            // One Prince at a time: a turn-in while a summoned one still lives (he stays until killed) leaves that one to fight.
+            // Demitrian stands about 100 yd from the summon point.
+            if (quest->GetQuestId() == QUEST_THUNDERAAN_THE_WINDSEEKER && !creature->FindNearestCreature(NPC_PRINCE_THUNDERAAN, 200.0f))
                 player->SummonCreature(NPC_PRINCE_THUNDERAAN, windseekerSpawnPos, TEMPSUMMON_MANUAL_DESPAWN); // in SAI it was 60s, but... i think it should despawn at evade and summon new if need from demitrian
 
             return true;

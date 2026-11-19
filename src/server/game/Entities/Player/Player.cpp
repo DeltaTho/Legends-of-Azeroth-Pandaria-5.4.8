@@ -16950,10 +16950,19 @@ void Player::RewardQuest(Quest const* quest, uint32 reward, Object* questGiver, 
         }
 
         PlayerTalkClass->ClearMenus();
+        // The script-class hook (CreatureScript / GameObjectScript::OnQuestReward) lost its only caller, the reward handler, when
+        // ddad56404 moved this block here. A true return still skips the giver's AI hook (SmartAI SMART_EVENT_REWARD_QUEST), as in
+        // the old handler, but no longer the follow-up quest, which is offered above: the scripts return true out of habit.
         if (Creature* creatureQGiver = questGiver->ToCreature())
-            creatureQGiver->AI()->OnQuestReward(this, quest, reward);
+        {
+            if (!sScriptMgr->OnQuestReward(this, creatureQGiver, quest, reward))
+                creatureQGiver->AI()->OnQuestReward(this, quest, reward);
+        }
         else if (GameObject* goQGiver = questGiver->ToGameObject())
-            goQGiver->AI()->OnQuestReward(this, quest, reward);
+        {
+            if (!sScriptMgr->OnQuestReward(this, goQGiver, quest, reward))
+                goQGiver->AI()->OnQuestReward(this, quest, reward);
+        }
     }
 
     sScriptMgr->OnQuestStatusChange(this, quest, oldStatus, QUEST_STATUS_REWARDED);

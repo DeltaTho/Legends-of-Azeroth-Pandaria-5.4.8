@@ -2168,10 +2168,17 @@ class go_wrathion_jewel_chest : public GameObjectScript
     public:
         go_wrathion_jewel_chest() : GameObjectScript("go_wrathion_jewel_chest") { }
 
-        bool OnQuestReward(Player* player, GameObject* go, Quest const* quest, uint32 /*item*/) override
+        // Ends the player's own Tong scene. The phase mask goes back to what the player's phase definitions and phase auras give
+        // (PhaseMgr), not to a forced 1, so a phase the player holds for another reason survives. The chest is phase 2, not private:
+        // it is deleted only when it is the one this player's Tong set down, never another player's in the same spot.
+        bool OnQuestReward(Player* player, GameObject* go, Quest const* /*quest*/, uint32 /*item*/) override
         {
-            player->SetPhaseMask(1, true);
-            go->Delete();
+            player->SetPhaseMask(player->GetPhaseMgr().GetCurrentPhasemask(), true);
+
+            if (Creature* tong = ObjectAccessor::GetCreature(*go, go->GetOwnerGUID()))
+                if (TempSummon* summon = tong->ToTempSummon())
+                    if (summon->GetSummonerGUID() == player->GetGUID())
+                        go->Delete();
 
             return true;
         }
