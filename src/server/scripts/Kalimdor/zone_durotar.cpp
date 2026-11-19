@@ -1050,42 +1050,38 @@ struct npc_trial_challengers : public ScriptedAI
     }
 };
 
-// Watershed Patrol 3193, 39325, 39326, 39324
-class npc_watershed_patrol : public CreatureScript
+// Watershed Patrol 25188 (ours, plan EB-3): each objective is earned at the hand-in of that person's (last) quest, by the
+// SmartAI REWARD_QUEST rows of Raggaran 39326 (25189, 25192), Misha 3193 (25193) and Zen'Taji 39324 (25195). Those quests
+// cannot be done twice, so a patrol abandoned and taken again, or taken by a character who handed one in before the patrol
+// could be credited (the dead npc_watershed_patrol hook), could never be finished. Taking the patrol, and logging in with it,
+// credits every person already helped. KilledMonsterCredit stops at the objective's count of 1: never twice.
+static void CreditWatershedPatrolHelped(Player* player)
 {
-    public:
-        npc_watershed_patrol() : CreatureScript("npc_watershed_patrol") { }
+    if (player->GetQuestStatus(QUEST_WATERSHED_PATROL) != QUEST_STATUS_INCOMPLETE)
+        return;
 
-        bool OnQuestReward(Player* player, Creature* creature, const Quest *_Quest, uint32 /*slot*/) override
+    for (auto const& helped : watershedMatchType)
+        if (player->GetQuestRewardStatus(helped.first))
+            player->KilledMonsterCredit(helped.second);
+}
+
+class quest_durotar_watershed_patrol : public QuestScript
+{
+public:
+    quest_durotar_watershed_patrol() : QuestScript("quest_durotar_watershed_patrol") { }
+
+    void OnQuestStatusChange(Player* player, Quest const* /*quest*/, QuestStatus /*oldStatus*/, QuestStatus newStatus) override
+    {
+        if (newStatus != QUEST_STATUS_INCOMPLETE)
+            return;
+
+        // A moment later, outside the quest code that is adding the quest (its objectives are set, the accept is sent)
+        player->m_Events.AddLambdaEventAtOffset([player]()
         {
-            if (player->GetQuestStatus(QUEST_WATERSHED_PATROL) != QUEST_STATUS_INCOMPLETE)
-                return false;
-
-            for (auto iType : watershedMatchType)
-            {
-                if (_Quest->GetQuestId() == iType.first)
-                {
-                    player->KilledMonsterCredit(iType.second);
-
-                    if (player->GetQuestStatus(QUEST_WATERSHED_PATROL) == QUEST_STATUS_INCOMPLETE)
-                        player->CompleteQuest(QUEST_WATERSHED_PATROL);
-
-                    return true;
-                }
-            }
-
-            return true;
-        }
-
-        struct npc_watershed_patrolAI : public ScriptedAI
-        {
-            npc_watershed_patrolAI(Creature* creature) : ScriptedAI(creature) { }
-        };
-
-        CreatureAI* GetAI(Creature* creature) const override
-        {
-            return new npc_watershed_patrolAI(creature);
-        }
+            if (player->IsInWorld() && !player->GetSession()->PlayerLogout())
+                CreditWatershedPatrolHelped(player);
+        }, 500);
+    }
 };
 
 const Position questPos[6] =
@@ -1750,6 +1746,7 @@ private:
 // issue). Backstop at login (OnLogin): a player who logs in on map 1 within the cameras' area, more than 4 yd over the ground
 // or water, not on a vehicle, with Lost in the Floods in the log, is set down on the tower; this also covers a crash after an
 // autosave in the seat.
+// Login: also Watershed Patrol credits for the people already helped (CreditWatershedPatrolHelped)
 class player_durotar_watershed : public PlayerScript
 {
 public:
@@ -1780,6 +1777,7 @@ public:
     void OnLogin(Player* player) override
     {
         SetDownAfterLogin(player);
+        CreditWatershedPatrolHelped(player);
     }
 
 private:
@@ -1898,7 +1896,7 @@ void AddSC_durotar()
     new npc_garrosh_horde_way_quest();
     new npc_ji_firepaw_horde_way_quest();
     new creature_script<npc_trial_challengers>("npc_trial_challengers");
-    new npc_watershed_patrol();
+    new quest_durotar_watershed_patrol();
     new creature_script<npc_darkspear_jailor>("npc_darkspear_jailor");
     new creature_script<npc_captive_pitescale_scout>("npc_captive_pitescale_scout");
     new spell_voodoo();
