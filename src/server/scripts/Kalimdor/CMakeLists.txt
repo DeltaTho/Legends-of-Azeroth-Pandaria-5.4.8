@@ -136,6 +136,7 @@ set(scripts_STAT_SRCS
   Kalimdor/WailingCaverns/instance_wailing_caverns.cpp
   Kalimdor/WailingCaverns/wailing_caverns.cpp
   Kalimdor/zone_durotar.cpp
+  Kalimdor/zone_durotar_blockade.cpp
   Kalimdor/zone_felwood.cpp
   Kalimdor/boss_azuregos.cpp
   Kalimdor/zone_tanaris.cpp
