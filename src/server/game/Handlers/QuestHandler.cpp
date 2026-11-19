@@ -715,7 +715,7 @@ void WorldSession::HandleQuestgiverCompleteQuest(WorldPacket& recvData)
 
     if (Quest const* quest = sObjectMgr->GetQuestTemplate(questId))
     {
-        if (autoCompleteMode && !quest->HasFlag(QUEST_FLAGS_AUTO_SUBMIT) && !quest->HasFlag(QUEST_FLAGS_AUTO_COMPLETE))
+        if (autoCompleteMode && !quest->HasFlag(QUEST_FLAGS_PLAYER_CAST_ACCEPT) && !quest->HasFlag(QUEST_FLAGS_AUTO_COMPLETE))
         {
             TC_LOG_ERROR("network", "Possible hacking attempt: Player %s [playerGuid: %u] tried to complete questId [entry: %u] by auto-submit flag for quest witch not suport it.",
                 _player->GetName().c_str(), _player->GetGUID().GetCounter(), questId);
