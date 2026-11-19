@@ -77,7 +77,7 @@ ConditionMgr::ConditionTypeInfo const ConditionMgr::StaticConditionTypeData[COND
     { "Reputation",                true, true,  false },
     { "Team",                      true, false, false },
     { "Skill",                     true, true,  false },
-    { "Quest Rewarded",            true, false, false },
+    { "Quest Rewarded",            true, false, true  }, // value3: see CONDITION_QUESTREWARDED in Condition::Meets
     { "Quest Taken",               true, false, false },
     { "Drunken",                   true, false, false },
     { "WorldState",                true, true,  false },
@@ -2223,7 +2223,9 @@ bool ConditionMgr::isConditionTypeValid(Condition* cond) const
             // conditions have nothing in value2 (#963: 37 false "useless data" lines per boot).
             if (cond->ConditionType != CONDITION_QUESTSTATE && cond->ConditionValue2 > 1)
                 TC_LOG_ERROR("sql.sql", "Quest condition has useless data in value2 (%u)!", cond->ConditionValue2);
-            if (cond->ConditionValue3)
+            // QUESTREWARDED reads value3 (Condition::Meets): 0 makes a condition on a quest of another race never true,
+            // anything else tests the reward status whatever the quest's AllowableRaces. The other quest conditions ignore it.
+            if (cond->ConditionType != CONDITION_QUESTREWARDED && cond->ConditionValue3)
                 TC_LOG_ERROR("sql.sql", "Quest condition has useless data in value3 (%u)!", cond->ConditionValue3);
             break;
         }
