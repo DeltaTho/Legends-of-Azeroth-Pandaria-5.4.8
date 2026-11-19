@@ -356,6 +356,7 @@ class Quest
         int32  GetPrevQuestId() const { return _prevQuestID; }
         uint32 GetNextQuestId() const { return _nextQuestID; }
         int32  GetExclusiveGroup() const { return _exclusiveGroup; }
+        int32  GetBreadcrumbForQuestId() const { return _breadcrumbForQuestId; }
         uint32 GetNextQuestInChain() const { return _nextQuestInChain; }
         int32  GetRewArenaPoints() const {return _rewardArenaPoints; }
         uint32 GetXPDifficulty() const { return _rewardXPDifficulty; }
@@ -439,6 +440,7 @@ class Quest
         uint32 GetRewCurrencyCount() const { return _rewCurrencyCount; }
 
         std::vector<uint32> DependentPreviousQuests;
+        std::vector<uint32> DependentBreadcrumbQuests;  // the breadcrumbs that lead to this quest, directly or through another breadcrumb
 
     private:
         uint32 _rewChoiceItemsCount;
@@ -506,6 +508,7 @@ class Quest
         int32 _prevQuestID = 0;
         uint32 _nextQuestID = 0;
         int32 _exclusiveGroup = 0;
+        int32 _breadcrumbForQuestId = 0;    // quest_template_addon.BreadcrumbForQuestId (TrinityCore): this quest only leads to that one
         uint32 _rewardMailTemplateId = 0;
         uint32 _rewardMailDelay = 0;
         uint32 _requiredSkillId = 0;

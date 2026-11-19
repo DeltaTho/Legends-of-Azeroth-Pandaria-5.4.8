@@ -1720,9 +1720,11 @@ class TC_GAME_API Player : public Unit, public GridObject<Player>
     bool SatisfyQuestSkill(Quest const* qInfo, bool msg) const;
     bool SatisfyQuestLevel(Quest const* qInfo, bool msg);
     bool SatisfyQuestLog(bool msg);
-    bool SatisfyQuestDependentQuests(Quest const* qInfo, bool msg) const;
+    bool SatisfyQuestDependentQuests(Quest const* qInfo, bool msg);
     bool SatisfyQuestPreviousQuest(Quest const* qInfo, bool msg) const;
     bool SatisfyQuestDependentPreviousQuests(Quest const* qInfo, bool msg) const;
+    bool SatisfyQuestBreadcrumbQuest(Quest const* qInfo, bool msg);
+    bool SatisfyQuestDependentBreadcrumbQuests(Quest const* qInfo, bool msg) const;
     bool SatisfyQuestClass(Quest const* qInfo, bool msg) const;
     bool SatisfyQuestRace(Quest const* qInfo, bool msg);
     bool SatisfyQuestReputation(Quest const* qInfo, bool msg);
