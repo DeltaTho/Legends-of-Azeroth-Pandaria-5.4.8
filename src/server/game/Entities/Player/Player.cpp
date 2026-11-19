@@ -17067,9 +17067,52 @@ bool Player::SatisfyQuestLog(bool msg)
     return false;
 }
 
-bool Player::SatisfyQuestDependentQuests(Quest const* qInfo, bool msg) const
+bool Player::SatisfyQuestDependentQuests(Quest const* qInfo, bool msg)
 {
-    return SatisfyQuestPreviousQuest(qInfo, msg) && SatisfyQuestDependentPreviousQuests(qInfo, msg);
+    return SatisfyQuestPreviousQuest(qInfo, msg) && SatisfyQuestDependentPreviousQuests(qInfo, msg) &&
+        SatisfyQuestBreadcrumbQuest(qInfo, msg) && SatisfyQuestDependentBreadcrumbQuests(qInfo, msg);
+}
+
+// A breadcrumb (BreadcrumbForQuestId) is offered only while its target could be taken: not once the target is in the log or rewarded,
+// nor while the player could not take it for any other reason (TrinityCore 59120fbd38 / master).
+bool Player::SatisfyQuestBreadcrumbQuest(Quest const* qInfo, bool msg)
+{
+    uint32 targetId = std::abs(qInfo->GetBreadcrumbForQuestId());
+    if (!targetId)
+        return true;
+
+    Quest const* target = sObjectMgr->GetQuestTemplate(targetId);
+    if (target && CanTakeQuest(target, false))
+        return true;
+
+    if (msg)
+    {
+        SendCanTakeQuestResponse(QUEST_ERR_NONE);
+        TC_LOG_DEBUG("misc", "SatisfyQuestBreadcrumbQuest: Sent QUEST_ERR_NONE (questId: %u) because its target quest %u is not available.", qInfo->GetQuestId(), targetId);
+    }
+
+    return false;
+}
+
+// The target of a breadcrumb is not offered while one of its breadcrumbs is in the log: the player hands that in first.
+bool Player::SatisfyQuestDependentBreadcrumbQuests(Quest const* qInfo, bool msg) const
+{
+    for (uint32 breadcrumbId : qInfo->DependentBreadcrumbQuests)
+    {
+        QuestStatus status = GetQuestStatus(breadcrumbId);
+        if (status == QUEST_STATUS_INCOMPLETE || status == QUEST_STATUS_COMPLETE || status == QUEST_STATUS_FAILED)
+        {
+            if (msg)
+            {
+                SendCanTakeQuestResponse(QUEST_ERR_NONE);
+                TC_LOG_DEBUG("misc", "SatisfyQuestDependentBreadcrumbQuests: Sent QUEST_ERR_NONE (questId: %u) because its breadcrumb quest %u is in the log.", qInfo->GetQuestId(), breadcrumbId);
+            }
+
+            return false;
+        }
+    }
+
+    return true;
 }
 
 bool Player::SatisfyQuestPreviousQuest(Quest const* qInfo, bool msg) const

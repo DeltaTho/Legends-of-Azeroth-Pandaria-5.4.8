@@ -205,6 +205,7 @@ void Quest::LoadQuestTemplateAddon(Field* fields)
     _sourceItemIdCount = fields[15].GetUInt8();
     _specialFlags = fields[16].GetUInt8();
     _scriptId = sObjectMgr->GetScriptId(fields[17].GetString());
+    _breadcrumbForQuestId = fields[18].GetInt32();
 
     if (_specialFlags & QUEST_SPECIAL_FLAGS_AUTO_ACCEPT)
         _flags |= QUEST_FLAGS_AUTO_ACCEPT;
