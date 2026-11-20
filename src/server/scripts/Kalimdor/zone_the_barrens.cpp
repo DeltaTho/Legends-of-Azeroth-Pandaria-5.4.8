@@ -31,6 +31,7 @@ EndContentData */
 #include "ScriptedGossip.h"
 #include "ScriptedEscortAI.h"
 #include "Player.h"
+#include "Pet.h"
 #include "SpellInfo.h"
 #include "TemporarySummon.h"
 
@@ -1093,6 +1094,57 @@ class spell_barrens_bandage : public SpellScript
     }
 };
 
+enum Echeyakee
+{
+    QUEST_ECHEYAKEE         = 881,
+    NPC_ECHEYAKEE           = 3475,
+};
+
+// 13481 - Tame Beast (the effect spell 1515 triggers when the 10 s tame channel completes; Spell::EffectTameCreature)
+// What the player sees (sourced: the quest log text of 881 "Slay or subdue him"; Wowhead 881 comments 2010-11-24 [+47],
+// 2011-01-04, 2011-03-05, 2011-05-26, 2011-06-04 that taming him counted - several 2011 replies say it did not, the quest text
+// decides, plan question 8): a hunter who tames Echeyakee with Echeyakee (881) in progress gets "Conquer Echeyakee" done, as if
+// he had killed him; his group gets nothing for a tame. Only a tame that really made a pet counts: the hunter had no pet before
+// the effect and has a pet of entry 3475 after it (EffectTameCreature returns early with a pet out, a full stable, etc.). Every
+// other tame is untouched. Ours: the hook point (a SpellScript here rather than a core edit).
+class spell_barrens_tame_echeyakee : public SpellScript
+{
+    PrepareSpellScript(spell_barrens_tame_echeyakee);
+
+    void RecordTarget()
+    {
+        _hadPet = !GetCaster()->GetPetGUID().IsEmpty();
+        Creature* target = GetHitCreature();
+        _isEcheyakee = target && target->GetEntry() == NPC_ECHEYAKEE;
+    }
+
+    void CreditTame()
+    {
+        if (_hadPet || !_isEcheyakee)
+            return;
+
+        Player* player = GetCaster()->ToPlayer();
+        if (!player || player->GetQuestStatus(QUEST_ECHEYAKEE) != QUEST_STATUS_INCOMPLETE)
+            return;
+
+        Pet* pet = player->GetPet();
+        if (!pet || pet->GetEntry() != NPC_ECHEYAKEE)
+            return;
+
+        player->KilledMonsterCredit(NPC_ECHEYAKEE);
+    }
+
+    void Register() override
+    {
+        BeforeHit += SpellHitFn(spell_barrens_tame_echeyakee::RecordTarget);
+        AfterHit += SpellHitFn(spell_barrens_tame_echeyakee::CreditTame);
+    }
+
+private:
+    bool _hadPet = true;
+    bool _isEcheyakee = false;
+};
+
 void AddSC_the_barrens()
 {
     new npc_wizzlecrank_shredder();
@@ -1102,4 +1154,5 @@ void AddSC_the_barrens()
     new AreaTrigger_at_groldom_farm();
     new creature_script<npc_barrent_wounded_defender>("npc_barrent_wounded_defender");
     new spell_script<spell_barrens_bandage>("spell_barrens_bandage");
+    new spell_script<spell_barrens_tame_echeyakee>("spell_barrens_tame_echeyakee");
 }
