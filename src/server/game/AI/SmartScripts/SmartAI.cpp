@@ -530,6 +530,15 @@ void SmartAI::MoveInLineOfSight(Unit* who)
     if (me->HasReactState(REACT_PASSIVE) || AssistPlayerInCombat(who))
         return;
 
+    // Only an AGGRESSIVE creature engages on sight, as CreatureAI::MoveInLineOfSight (#803) and upstream TrinityCore: a
+    // DEFENSIVE one (SMART_ACTION_SET_REACT_STATE 1) fights back when attacked but starts nothing. Without this the block
+    // below made every defensive SmartAI creature pull like an aggressive one.
+    if (!me->HasReactState(REACT_AGGRESSIVE))
+    {
+        CreatureAI::MoveInLineOfSight(who);
+        return;
+    }
+
     if (!CanAIAttack(who))
         return;
 
