@@ -714,6 +714,7 @@ class npc_razormane_pillager : public CreatureScript
 
             ObjectGuid summonerGUID;
             uint32 checkTimer = 1000;
+            bool fled = false;
 
             // Hogtied Razormane 34514, summoned by 65595 when the player pounds a netted pillager.
             // What the player sees (sourced: aura 65601 Dragging a Razormane lasts 600 s and is limited to AreaGroup 2711 = the
@@ -762,6 +763,21 @@ class npc_razormane_pillager : public CreatureScript
                 // pillager used to turn it hostile again at once (13961 CB-1). The hogtied copy keeps the faction IsSummonedBy set.
                 if (me->GetEntry() != NPC_RAZORMANE_PILLAGER_SUMMONED && !me->HasAura(SPELL_SNARED_IN_NET))
                     me->RestoreFaction();
+                fled = false;
+            }
+
+            // Both TDBs' SmartAI row 34503/0 "Between 0-15% Health - Flee For Assist (No Repeat)", dead here because the C++
+            // ScriptName wins over AIName (13973 claim 6, CB-4). Once per life / evade.
+            void DamageTaken(Unit* /*attacker*/, uint32& damage) override
+            {
+                if (fled || me->GetEntry() == NPC_RAZORMANE_PILLAGER_SUMMONED || me->HasAura(SPELL_SNARED_IN_NET))
+                    return;
+
+                if (damage < me->GetHealth() && me->HealthBelowPctDamaged(15, damage))
+                {
+                    fled = true;
+                    me->DoFleeToGetAssistance();
+                }
             }
 
             void UpdateAI(uint32 diff) override
