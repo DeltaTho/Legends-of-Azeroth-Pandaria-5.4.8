@@ -844,7 +844,9 @@ class AreaTrigger_at_groldom_farm : public AreaTriggerScript
 
                 player->RemoveAurasDueToSpell(SPELL_DRAGING_A_RAZORMANE);
                 player->RemoveAurasDueToSpell(SPELL_SNARED_NET_CONNECTOR);
-                player->CompleteQuest(QUEST_DRAG_IT_OUT_OF_THEM);
+                // Counts the "Razormane Prisoner Delivered" objective (type 10) as well as completing: CompleteQuest left the log
+                // line at 0/1 (13961 CB-2)
+                player->AreaExploredOrEventHappens(QUEST_DRAG_IT_OUT_OF_THEM);
             }
 
             return false;
