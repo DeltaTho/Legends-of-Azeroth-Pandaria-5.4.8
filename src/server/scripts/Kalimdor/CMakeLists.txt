@@ -124,6 +124,7 @@ set(scripts_STAT_SRCS
   Kalimdor/RuinsOfAhnQiraj/ruins_of_ahnqiraj.h
   Kalimdor/RuinsOfAhnQiraj/boss_kurinnaxx.cpp
   Kalimdor/zone_mulgore.cpp
+  Kalimdor/zone_northern_barrens_morshan.cpp
   Kalimdor/zone_bloodmyst_isle.cpp
   Kalimdor/zone_thunder_bluff.cpp
   Kalimdor/zone_azshara.cpp
