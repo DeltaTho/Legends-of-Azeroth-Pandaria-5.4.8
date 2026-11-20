@@ -529,6 +529,10 @@ enum Wizzlecrank
     FACTION_RATCHET     = 637,
     NPC_PILOT_WIZZ      = 3451,
     NPC_MERCENARY       = 3282,
+
+    SPELL_SELF_EXPLOSION = 5162,   // both TDBs (actionlist 343903): an instakill on itself as the shredder gives out
+    ESCAPE_START_DELAY   = 6000,   // both TDBs: Say 0, 6 s, Say 1 and the walk (343900)
+    ESCAPE_START_RETRIES = 20,     // ours: while something fights it, Start is retried once a second this many times
 };
 
 class npc_wizzlecrank_shredder : public CreatureScript
@@ -543,11 +547,72 @@ public:
             IsPostEvent = false;
             PostEventTimer = 1000;
             PostEventCount = 0;
+            StartTimer = 0;
+            StartTries = 0;
         }
 
         bool IsPostEvent;
         uint32 PostEventTimer;
         uint32 PostEventCount;
+        uint32 StartTimer;
+        uint32 StartTries;
+        ObjectGuid StarterGUID;
+
+        // The Escape (863) accepted: "Alright, alright! I think I can figure out how to operate this thing..." to the player,
+        // the shredder stops offering the quest (both TDBs 343900: Remove NPC Flag Questgiver; dossier H finding 3), and the walk
+        // starts 6 s later. It keeps its own faction (69, neutral to the Venture Co. mercenaries a few yards away) until the walk
+        // starts and takes 637 only then: with 637 at accept the mercenaries fought it in those 6 s, npc_escortAI::Start refuses
+        // a creature with a victim (ScriptedEscortAI.cpp:454) and it stood for ever with no quest flag (review round 1, walk B1).
+        // Should something still fight it then, Start is retried each second; if it cannot start, the shredder offers the
+        // quest again (AbortStart). Every end of a started escort despawns the shredder (end of path, player out of range, its
+        // death) and its respawn puts the template npcflag and faction back (Creature::setDeathState JUST_RESPAWNED,
+        // npc_escortAI::JustAppeared).
+        void BeginEscape(Player* player)
+        {
+            if (HasEscortState(STATE_ESCORT_ESCORTING) || StartTimer)
+                return;
+
+            me->RemoveFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_QUESTGIVER);
+            Talk(SAY_START, player);
+            StarterGUID = player->GetGUID();
+            StartTimer = ESCAPE_START_DELAY;
+            StartTries = 0;
+        }
+
+        void TryStartEscape()
+        {
+            if (me->GetVictim())
+            {
+                if (++StartTries < ESCAPE_START_RETRIES)
+                    StartTimer = 1000;
+                else
+                    AbortStart();
+                return;
+            }
+
+            me->SetFaction(FACTION_RATCHET);
+            Start(true, false, StarterGUID);
+            if (!HasEscortState(STATE_ESCORT_ESCORTING))
+                AbortStart();
+        }
+
+        // The escort never started: faction and quest flag back, so 863 can be taken (and 858 handed in) again. The starter's
+        // 863 stays incomplete: abandon and retake, as after any failed escort.
+        void AbortStart()
+        {
+            StartTimer = 0;
+            StartTries = 0;
+            StarterGUID.Clear();
+            me->RestoreFaction();
+            me->SetFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_QUESTGIVER);
+        }
+
+        void JustDied(Unit* killer) override
+        {
+            StartTimer = 0;   // a death in the 6 s: the respawn starts clean
+            StartTries = 0;
+            npc_escortAI::JustDied(killer);
+        }
 
         void Reset() override
         {
@@ -615,6 +680,17 @@ public:
 
         void UpdateEscortAI(const uint32 Diff) override
         {
+            if (StartTimer)
+            {
+                if (StartTimer <= Diff)
+                {
+                    StartTimer = 0;
+                    TryStartEscape();
+                }
+                else
+                    StartTimer -= Diff;
+            }
+
             if (!UpdateVictim())
             {
                 if (IsPostEvent)
@@ -633,12 +709,18 @@ public:
                                 Talk(SAY_END);
                                 break;
                             case 3:
+                                // Both TDBs (343903): credit, Self Explosion, the pilot, despawn 10 s later. Self Explosion is an
+                                // instakill (effect 1) on itself, so the shredder dies where it gives out (event 524 is empty);
+                                // the pilot climbs out beside the wreck, which is gone 10 s later and respawns 300 s after that.
+                                // The cast comes last: a dead creature's AI no longer updates.
                                 if (Player* player = GetPlayerForEscort())
                                 {
                                     player->GroupEventHappens(QUEST_ESCAPE, me);
                                     me->SummonCreature(NPC_PILOT_WIZZ, 0.0f, 0.0f, 0.0f, 0.0f, TEMPSUMMON_TIMED_DESPAWN, 180000ms);
                                 }
-                                break;
+                                DoCast(me, SPELL_SELF_EXPLOSION, true);
+                                me->DespawnOrUnsummon(10 * IN_MILLISECONDS);
+                                return;
                         }
 
                         ++PostEventCount;
@@ -658,11 +740,8 @@ public:
     bool OnQuestAccept(Player* player, Creature* creature, Quest const* quest) override
     {
         if (quest->GetQuestId() == QUEST_ESCAPE)
-        {
-            creature->SetFaction(FACTION_RATCHET);
-            if (npc_escortAI* pEscortAI = CAST_AI(npc_wizzlecrank_shredder::npc_wizzlecrank_shredderAI, creature->AI()))
-                pEscortAI->Start(true, false, player->GetGUID());
-        }
+            if (npc_wizzlecrank_shredderAI* shredderAI = CAST_AI(npc_wizzlecrank_shredder::npc_wizzlecrank_shredderAI, creature->AI()))
+                shredderAI->BeginEscape(player);
         return true;
     }
 
