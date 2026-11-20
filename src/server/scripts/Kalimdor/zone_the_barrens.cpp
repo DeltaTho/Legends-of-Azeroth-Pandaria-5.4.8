@@ -32,6 +32,7 @@ EndContentData */
 #include "ScriptedEscortAI.h"
 #include "Player.h"
 #include "SpellInfo.h"
+#include "TemporarySummon.h"
 
 /*######
 ## npc_beaten_corpse
@@ -712,7 +713,15 @@ class npc_razormane_pillager : public CreatureScript
             npc_razormane_pillagerAI(Creature* creature) : ScriptedAI(creature) { }
 
             ObjectGuid summonerGUID;
+            uint32 checkTimer = 1000;
 
+            // Hogtied Razormane 34514, summoned by 65595 when the player pounds a netted pillager.
+            // What the player sees (sourced: aura 65601 Dragging a Razormane lasts 600 s and is limited to AreaGroup 2711 = the
+            // Northern Barrens; Wowhead 13961 comments "10 mins" (reply to 2010-12-30) and "took him to Orgrimmar and he
+            // disappeared" (2010-12-30, 2011-02-22)): the razormane lies trussed up and is dragged on a rope behind the player for
+            // up to ten minutes; it is gone, with the rope, the moment the player abandons the quest, leaves the Barrens, dies,
+            // logs out or delivers it. Before: it vanished after 300 s while the 600 s aura (which the areatrigger credits) stayed,
+            // and it followed on after an abandon or a zone change; the rope aura was never removed (13961 CB-3).
             void IsSummonedBy(Unit* summoner) override
             {
                 summonerGUID = summoner->GetGUID();
@@ -720,8 +729,31 @@ class npc_razormane_pillager : public CreatureScript
                 me->CastSpell(summoner, SPELL_SNARED_NET_CONNECTOR, true);
                 me->SetFaction(35);
                 me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_PACIFIED | UNIT_FLAG_IMMUNE_TO_NPC);
-                me->DespawnOrUnsummon(300 * IN_MILLISECONDS);
+                me->DespawnOrUnsummon(600 * IN_MILLISECONDS);   // as long as the drag aura
                 me->SetStandState(UNIT_STAND_STATE_DEAD);
+                me->GetMotionMaster()->MoveFollow(summoner, 2.5f, me->GetAngle(summoner));
+                checkTimer = 1000;
+            }
+
+            // The hogtied razormane still belongs to its owner: he has the drag aura and 13961 in progress
+            bool OwnerStillDragging(Player* owner) const
+            {
+                return owner && owner->IsInWorld() && owner->IsAlive() && owner->HasAura(SPELL_DRAGING_A_RAZORMANE)
+                    && owner->GetQuestStatus(QUEST_DRAG_IT_OUT_OF_THEM) == QUEST_STATUS_INCOMPLETE;
+            }
+
+            // Whatever ends the drag (the 600 s, the checks below, the areatrigger's despawn, the owner leaving the world) takes the
+            // rope and the drag aura off the owner as well
+            void Unsummoned() override
+            {
+                if (me->GetEntry() != NPC_RAZORMANE_PILLAGER_SUMMONED)
+                    return;
+
+                if (Player* owner = ObjectAccessor::GetPlayer(*me, summonerGUID))
+                {
+                    owner->RemoveAurasDueToSpell(SPELL_DRAGING_A_RAZORMANE, me->GetGUID());
+                    owner->RemoveAurasDueToSpell(SPELL_SNARED_NET_CONNECTOR, me->GetGUID());
+                }
             }
 
             void Reset() override
@@ -736,9 +768,28 @@ class npc_razormane_pillager : public CreatureScript
             {
                 if (me->GetEntry() == NPC_RAZORMANE_PILLAGER_SUMMONED)
                 {
-                    if (Unit* owner = ObjectAccessor::GetUnit(*me, summonerGUID))
-                        me->GetMotionMaster()->MoveFollow(owner, 2.5f, me->GetAngle(owner));
+                    if (checkTimer > diff)
+                    {
+                        checkTimer -= diff;
+                        return;
+                    }
+                    checkTimer = 1000;
 
+                    Player* owner = ObjectAccessor::GetPlayer(*me, summonerGUID);
+                    if (!OwnerStillDragging(owner))
+                    {
+                        // Abandoned, left the Barrens (65601 is area-limited), dead, gone, or delivered
+                        if (TempSummon* summon = me->ToTempSummon())
+                            summon->UnSummon();
+                        else
+                            me->DespawnOrUnsummon();
+                        return;
+                    }
+
+                    // Follow is issued once; only a lost follow (a teleport, a cleared motion master) is given again, so the
+                    // rope does not stutter from a new follow every tick
+                    if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() != FOLLOW_MOTION_TYPE)
+                        me->GetMotionMaster()->MoveFollow(owner, 2.5f, me->GetAngle(owner));
                     return;
                 }
 
