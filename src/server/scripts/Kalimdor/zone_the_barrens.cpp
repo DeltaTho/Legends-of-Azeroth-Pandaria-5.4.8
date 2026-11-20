@@ -58,6 +58,14 @@ enum eCreatures
     NPC_RAZORMANE_PILLAGER_SUMMONED = 34514,
 };
 
+enum eDragItOutOfThem
+{
+    FACTION_NETTED_PILLAGER    = 35,
+    NET_DURATION               = 300 * IN_MILLISECONDS,
+    TALK_PILLAGER_ENSNARED     = 0,    // "%s is ensnared!" (BT 34691)
+    TALK_PILLAGER_BREAKS_FREE  = 1,    // "%s breaks out of the net." (BT 34690)
+};
+
 class npc_beaten_corpse : public CreatureScript
 {
 public:
@@ -718,7 +726,10 @@ class npc_razormane_pillager : public CreatureScript
 
             void Reset() override
             {
-                me->SetFaction(109);
+                // The free pillager takes its template faction (109) back, but not while it lies in the net: an evade of a netted
+                // pillager used to turn it hostile again at once (13961 CB-1). The hogtied copy keeps the faction IsSummonedBy set.
+                if (me->GetEntry() != NPC_RAZORMANE_PILLAGER_SUMMONED && !me->HasAura(SPELL_SNARED_IN_NET))
+                    me->RestoreFaction();
             }
 
             void UpdateAI(uint32 diff) override
@@ -730,6 +741,10 @@ class npc_razormane_pillager : public CreatureScript
 
                     return;
                 }
+
+                // Netted: no victim, no evade (the net ended its fight; the aura's removal sends it home)
+                if (me->HasAura(SPELL_SNARED_IN_NET))
+                    return;
 
                 if (!UpdateVictim())
                     return;
@@ -762,28 +777,53 @@ class spell_groldom_net : public SpellScript
 };
 
 // Snared in Net 65581
+// What the player sees (sourced: Wowhead 13961 comments 2010-12-04 [+59] and 2011-07-17 [+12] with its reply - charging pillagers
+// that the guards are shooting can be netted too, they turn green and can be pounded; creature_text 34503 groups 0/1, broadcast
+// 34691 "%s is ensnared!" / 34690 "%s breaks out of the net."): the netted pillager stops fighting at once, emotes that it is
+// ensnared, turns friendly (green) and lies stunned; whoever was fighting it (the player, Grol'dom Grunts) lets go. If nobody
+// pounds it, after 300 s it emotes that it breaks out, turns hostile and walks home. Ours: the 300 s (kept from the old script).
+// Before: a pillager in combat went friendly with a victim still set, evaded the next tick and Reset made it hostile (CB-1).
 class spell_snared_in_net : public AuraScript
 {
     PrepareAuraScript(spell_snared_in_net);
 
-    void Apply(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
+    void AfterApply(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
     {
-        if (Unit* owner = GetOwner()->ToCreature())
-        {
-            owner->SetFaction(35);
+        Creature* owner = GetTarget()->ToCreature();
+        if (!owner)
+            return;
 
-            uint32 delay = 0;
-            owner->m_Events.Schedule(delay += 300 * IN_MILLISECONDS, 1, [owner]()
-            {
-                owner->SetFaction(109);
-                owner->RemoveAurasDueToSpell(SPELL_SNARED_IN_NET);
-            });
+        owner->CombatStop(true);   // also makes its attackers (players, Grunts) let go: Unit::RemoveAllAttackers
+        owner->GetThreatManager().ClearAllThreat();
+        owner->GetMotionMaster()->Clear();
+        owner->GetMotionMaster()->MoveIdle();
+        owner->SetFaction(FACTION_NETTED_PILLAGER);
+        if (owner->IsAIEnabled)
+            owner->AI()->Talk(TALK_PILLAGER_ENSNARED);
+
+        // The aura itself is infinite (DBC); the net holds 300 s
+        GetAura()->SetMaxDuration(NET_DURATION);
+        GetAura()->SetDuration(NET_DURATION);
+    }
+
+    void AfterRemove(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
+    {
+        Creature* owner = GetTarget()->ToCreature();
+        if (!owner || !owner->IsAlive() || !owner->IsInWorld())
+            return;
+
+        owner->RestoreFaction();
+        if (GetTargetApplication()->GetRemoveMode() == AURA_REMOVE_BY_EXPIRE && owner->IsAIEnabled)
+        {
+            owner->AI()->Talk(TALK_PILLAGER_BREAKS_FREE);
+            owner->AI()->EnterEvadeMode();   // back to its spot or path
         }
     }
 
     void Register() override
     {
-        OnEffectApply += AuraEffectApplyFn(spell_snared_in_net::Apply, EFFECT_0, SPELL_AURA_MOD_STUN, AURA_EFFECT_HANDLE_REAL);
+        AfterEffectApply += AuraEffectApplyFn(spell_snared_in_net::AfterApply, EFFECT_0, SPELL_AURA_MOD_STUN, AURA_EFFECT_HANDLE_REAL);
+        AfterEffectRemove += AuraEffectRemoveFn(spell_snared_in_net::AfterRemove, EFFECT_0, SPELL_AURA_MOD_STUN, AURA_EFFECT_HANDLE_REAL);
     }
 };
 
