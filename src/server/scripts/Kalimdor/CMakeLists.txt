@@ -143,6 +143,7 @@ set(scripts_STAT_SRCS
   Kalimdor/zone_felwood.cpp
   Kalimdor/boss_azuregos.cpp
   Kalimdor/zone_tanaris.cpp
+  Kalimdor/zone_ratchet.cpp
   Kalimdor/zone_dustwallow_marsh.cpp
   Kalimdor/zone_winterspring.cpp
   Kalimdor/zone_thousand_needles.cpp

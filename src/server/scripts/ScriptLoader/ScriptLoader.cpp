@@ -534,6 +534,7 @@ void AddSC_orgrimmar();
 void AddSC_silithus();
 void AddSC_stonetalon_mountains();
 void AddSC_tanaris();
+void AddSC_ratchet();
 void AddSC_teldrassil();
 void AddSC_the_barrens();
 void AddSC_northern_barrens_caravans();
@@ -1609,6 +1610,7 @@ void AddKalimdorScripts()
     AddSC_silithus();
     AddSC_stonetalon_mountains();
     AddSC_tanaris();
+    AddSC_ratchet();
     AddSC_teldrassil();
     AddSC_the_barrens();
     AddSC_northern_barrens_caravans();
