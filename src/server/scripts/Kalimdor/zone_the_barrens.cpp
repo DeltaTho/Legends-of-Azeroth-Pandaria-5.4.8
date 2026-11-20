@@ -34,6 +34,11 @@ EndContentData */
 #include "Pet.h"
 #include "SpellInfo.h"
 #include "TemporarySummon.h"
+#include "MotionMaster.h"
+#include "ObjectAccessor.h"
+#include "GameObject.h"
+#include "SpellMgr.h"
+#include "CreatureTextMgr.h"
 
 /*######
 ## npc_beaten_corpse
@@ -1145,6 +1150,301 @@ private:
     bool _isEcheyakee = false;
 };
 
+/*######
+## A Growing Problem (13988): Tonga's Eyes 34615 at Thunderhead Summit
+######*/
+
+enum AGrowingProblem
+{
+    QUEST_A_GROWING_PROBLEM         = 13988,
+    NPC_TONGAS_SPIRIT               = 34623,
+    NPC_SUMMIT_CREDIT               = 34631,   // "Tonga's Eyes Taken to Summit"
+    GO_THUNDERHEAD_SUMMIT           = 195146,  // the summit circle's focus (type 8, radius 10), at the retail POI
+    SPELL_SUMMON_TONGAS_SPIRIT      = 65763,   // only for its spell_target_position (the spirit is summoned private, below)
+    SPELL_SUMMIT_QUEST_CREDIT       = 65773,   // KILL_CREDIT 34631 on the caster's master
+
+    TALK_EAGLE_CALLS_OUT            = 0,       // BT 34863 "Tonga's eagle calls out, then circles toward the peak."
+    TALK_SPIRIT_WELL_DONE           = 0,       // BT 34864
+    TALK_SPIRIT_DEVASTATION         = 1,       // BT 34865
+    TALK_SPIRIT_SOUTH               = 2,       // BT 34866
+    TALK_SPIRIT_FLORA               = 3,       // BT 34867 (the wiki gives all five lines to the spirit)
+    TALK_SPIRIT_INVESTIGATE         = 4,       // BT 34868
+
+    EVENT_EYES_CHECK                = 1,
+    EVENT_EYES_SPIRIT               = 2,
+    EVENT_EYES_LINE_1               = 3,
+    EVENT_EYES_LINE_2               = 4,
+    EVENT_EYES_LINE_3               = 5,
+    EVENT_EYES_LINE_4               = 6,
+    EVENT_EYES_LINE_5               = 7,
+    EVENT_EYES_LAND                 = 8,
+    EVENT_EYES_END                  = 9,
+
+    POINT_EYES_CIRCLE               = 1,
+    POINT_EYES_LAND                 = 2,
+};
+
+static constexpr float EYES_TRIGGER_RANGE   = 10.0f;   // "the eagle itself must be near the banner" (the focus radius 10)
+static constexpr float EYES_CIRCLE_RADIUS   = 8.0f;
+static constexpr float EYES_CIRCLE_HEIGHT   = 7.0f;
+static constexpr uint32 EYES_CIRCLE_POINTS  = 6;
+static constexpr float EYES_ABORT_RANGE     = 80.0f;
+static Position const TongasSpiritPos = { -1481.44f, -3292.72f, 210.767f, 0.0f };   // 65763's spell_target_position
+
+// What the player sees (sourced: Wowhead 13988 comments 2010-07-07 beta, 2011-01-14 [+20], 2012-02-19 [+214] and replies,
+// 2013-04-04 [+9], 2014-02-09; broadcast texts 34863-34868; video k9qcPVg-bv8 (2014-07-22, 5.4.8) in research\northern-barrens\
+// second-pass.md: the eagle flies with the player, the spirit appears beside the circle and says "Well done, friend!", and the
+// quest is complete within ~10 s of the spirit appearing): Tonga's eagle follows the player; when it reaches the summit circle
+// (totems and banner, GO 195146) with the quest in progress it calls out (personal emote), flies one circle round the banner,
+// and a ghostly Tonga appears at the circle; the objective completes as he appears (65773, a kill credit, so the group shares
+// it); Tonga surveys the devastation in five lines (the wiki: all his), the eagle lands by the spirit and both go.
+// The eagle flies all the way (creature_template_movement Flight 1; the video shows it flying with the player).
+// Ours: the circle's size, height and timing, the 4.5 s between lines, the lines personal (TextRange 5), the spirit private to the player (65763 would
+// put a public ghost on the summit for every player's scene), the eagle immune and passive, and the eagle leaving as soon as
+// 13988 is no longer in the log (abandon) - it otherwise lives its hour.
+struct npc_tonga_eyes : public ScriptedAI
+{
+    npc_tonga_eyes(Creature* creature) : ScriptedAI(creature) { }
+
+    void IsSummonedBy(Unit* summoner) override
+    {
+        if (summoner->GetTypeId() != TYPEID_PLAYER)
+            return;
+
+        _ownerGUID = summoner->GetGUID();
+        me->SetReactState(REACT_PASSIVE);
+        me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_PC | UNIT_FLAG_IMMUNE_TO_NPC);
+        _events.Reset();
+        _events.ScheduleEvent(EVENT_EYES_CHECK, 1s);
+    }
+
+    void AttackStart(Unit* /*who*/) override { }
+    void MoveInLineOfSight(Unit* /*who*/) override { }
+
+    // Out of the scene an evade only sends it back to its owner (CreatureAI::EnterEvadeMode follows the owner)
+    void EnterEvadeMode(EvadeReason why) override
+    {
+        if (_inScene)
+            return;
+        ScriptedAI::EnterEvadeMode(why);
+    }
+
+    Player* GetOwnerPlayer() const
+    {
+        return ObjectAccessor::GetPlayer(*me, _ownerGUID);
+    }
+
+    Creature* GetSpirit() const
+    {
+        return ObjectAccessor::GetCreature(*me, _spiritGUID);
+    }
+
+    void SayTo(Creature* speaker, uint8 group)
+    {
+        if (speaker)
+            if (Player* owner = GetOwnerPlayer())
+                sCreatureTextMgr->SendChat(speaker, group, owner);
+    }
+
+    void StartScene(GameObject* summit)
+    {
+        _inScene = true;
+        _circleCenter = summit->GetPosition();
+        SayTo(me, TALK_EAGLE_CALLS_OUT);
+
+        // One circle round the banner, starting on the eagle's side of it
+        float const start = summit->GetAngle(me);
+        _circle.clear();
+        for (uint32 i = 1; i <= EYES_CIRCLE_POINTS; ++i)
+        {
+            float const angle = Position::NormalizeOrientation(start + float(i) * 2.0f * float(M_PI) / float(EYES_CIRCLE_POINTS));
+            _circle.emplace_back(_circleCenter.GetPositionX() + EYES_CIRCLE_RADIUS * std::cos(angle),
+                _circleCenter.GetPositionY() + EYES_CIRCLE_RADIUS * std::sin(angle), _circleCenter.GetPositionZ() + EYES_CIRCLE_HEIGHT);
+        }
+        _nextPoint = 0;
+
+        me->GetMotionMaster()->Clear();
+        me->SetCanFly(true);
+        me->SetDisableGravity(true);
+        MoveNextCirclePoint();
+    }
+
+    void MoveNextCirclePoint()
+    {
+        if (_nextPoint >= _circle.size())
+        {
+            _events.ScheduleEvent(EVENT_EYES_SPIRIT, 200ms);
+            return;
+        }
+        Position const& pos = _circle[_nextPoint];
+        me->GetMotionMaster()->MovePoint(POINT_EYES_CIRCLE, pos.GetPositionX(), pos.GetPositionY(), pos.GetPositionZ(), false);
+    }
+
+    void MovementInform(uint32 type, uint32 id) override
+    {
+        if (type == POINT_MOTION_TYPE && id == POINT_EYES_CIRCLE && _inScene && !_ended)
+        {
+            ++_nextPoint;
+            MoveNextCirclePoint();
+        }
+    }
+
+    void SummonSpiritAndCredit()
+    {
+        Player* owner = GetOwnerPlayer();
+        if (!owner)
+        {
+            End();
+            return;
+        }
+
+        Position pos = TongasSpiritPos;
+        if (SpellTargetPosition const* target = sSpellMgr->GetSpellTargetPosition(SPELL_SUMMON_TONGAS_SPIRIT, EFFECT_0))
+            pos.Relocate(target->target_X, target->target_Y, target->target_Z);
+        pos.SetOrientation(pos.GetAngle(owner));
+
+        if (TempSummon* spirit = me->SummonCreature(NPC_TONGAS_SPIRIT, pos, TEMPSUMMON_TIMED_DESPAWN, 60s, 0, _ownerGUID))
+        {
+            _spiritGUID = spirit->GetGUID();
+            spirit->SetReactState(REACT_PASSIVE);
+        }
+
+        // The credit comes with the spirit. 65773 targets the caster's master (Spell.cpp TARGET_UNIT_MASTER ->
+        // GetCharmerOrOwner); should it find nobody, the owner is credited directly.
+        me->CastSpell(me, SPELL_SUMMIT_QUEST_CREDIT, true);
+        if (owner->GetQuestStatus(QUEST_A_GROWING_PROBLEM) == QUEST_STATUS_INCOMPLETE)
+            owner->KilledMonsterCredit(NPC_SUMMIT_CREDIT);
+
+        _events.ScheduleEvent(EVENT_EYES_LINE_1, 2s);
+        _events.ScheduleEvent(EVENT_EYES_LINE_2, 6500ms);
+        _events.ScheduleEvent(EVENT_EYES_LINE_3, 11s);
+        _events.ScheduleEvent(EVENT_EYES_LINE_4, 15500ms);
+        _events.ScheduleEvent(EVENT_EYES_LINE_5, 20s);
+        _events.ScheduleEvent(EVENT_EYES_LAND, 23s);
+        _events.ScheduleEvent(EVENT_EYES_END, 27s);
+    }
+
+    void UnsummonSpirit()
+    {
+        if (Creature* spirit = GetSpirit())
+            if (TempSummon* summon = spirit->ToTempSummon())
+                summon->UnSummon();
+        _spiritGUID.Clear();
+    }
+
+    // Every end: the spirit and the eagle go
+    void End()
+    {
+        if (_ended)
+            return;
+        _ended = true;
+        _events.Reset();
+        UnsummonSpirit();
+        me->DespawnOrUnsummon();
+    }
+
+    // The hour running out, the owner's death or logout (his guardians go with him), a new totem use (same slot)
+    void Unsummoned() override
+    {
+        UnsummonSpirit();
+    }
+
+    void JustDied(Unit* /*killer*/) override
+    {
+        UnsummonSpirit();
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        if (_ended)
+            return;
+
+        _events.Update(diff);
+        while (uint32 eventId = _events.ExecuteEvent())
+        {
+            switch (eventId)
+            {
+                case EVENT_EYES_CHECK:
+                {
+                    _events.ScheduleEvent(EVENT_EYES_CHECK, 1s);
+                    Player* owner = GetOwnerPlayer();
+                    if (!owner || !owner->IsInWorld())
+                    {
+                        End();
+                        return;
+                    }
+
+                    if (_inScene)
+                    {
+                        // The scene is the owner's: it stops if he leaves or dies
+                        if (!owner->IsAlive() || owner->GetMapId() != me->GetMapId() || owner->GetDistance(me) > EYES_ABORT_RANGE)
+                        {
+                            End();
+                            return;
+                        }
+                        break;
+                    }
+
+                    QuestStatus const status = owner->GetQuestStatus(QUEST_A_GROWING_PROBLEM);
+                    if (status == QUEST_STATUS_NONE || status == QUEST_STATUS_REWARDED)
+                    {
+                        End();   // abandoned (or a totem kept after the turn-in)
+                        return;
+                    }
+
+                    if (status == QUEST_STATUS_INCOMPLETE)
+                        if (GameObject* summit = me->FindNearestGameObject(GO_THUNDERHEAD_SUMMIT, EYES_TRIGGER_RANGE))
+                            StartScene(summit);
+                    break;
+                }
+                case EVENT_EYES_SPIRIT:
+                    SummonSpiritAndCredit();
+                    break;
+                case EVENT_EYES_LINE_1:
+                    SayTo(GetSpirit(), TALK_SPIRIT_WELL_DONE);
+                    break;
+                case EVENT_EYES_LINE_2:
+                    SayTo(GetSpirit(), TALK_SPIRIT_DEVASTATION);
+                    break;
+                case EVENT_EYES_LINE_3:
+                    SayTo(GetSpirit(), TALK_SPIRIT_SOUTH);
+                    break;
+                case EVENT_EYES_LINE_4:
+                    SayTo(GetSpirit(), TALK_SPIRIT_FLORA);
+                    break;
+                case EVENT_EYES_LINE_5:
+                    SayTo(GetSpirit(), TALK_SPIRIT_INVESTIGATE);
+                    break;
+                case EVENT_EYES_LAND:
+                    // The eagle comes down beside the spirit ("landed with the spirit", 2012-02-19 replies)
+                    if (Creature* spirit = GetSpirit())
+                    {
+                        Position land = spirit->GetNearPosition(2.0f, float(M_PI) / 2.0f);
+                        me->GetMotionMaster()->MovePoint(POINT_EYES_LAND, land.GetPositionX(), land.GetPositionY(), spirit->GetPositionZ(), false);
+                    }
+                    break;
+                case EVENT_EYES_END:
+                    End();
+                    return;
+                default:
+                    break;
+            }
+            if (_ended)
+                return;
+        }
+    }
+
+private:
+    EventMap _events;
+    ObjectGuid _ownerGUID;
+    ObjectGuid _spiritGUID;
+    Position _circleCenter;
+    std::vector<Position> _circle;
+    size_t _nextPoint = 0;
+    bool _inScene = false;
+    bool _ended = false;
+};
+
 void AddSC_the_barrens()
 {
     new npc_wizzlecrank_shredder();
@@ -1155,4 +1455,5 @@ void AddSC_the_barrens()
     new creature_script<npc_barrent_wounded_defender>("npc_barrent_wounded_defender");
     new spell_script<spell_barrens_bandage>("spell_barrens_bandage");
     new spell_script<spell_barrens_tame_echeyakee>("spell_barrens_tame_echeyakee");
+    new creature_script<npc_tonga_eyes>("npc_tonga_eyes");
 }
