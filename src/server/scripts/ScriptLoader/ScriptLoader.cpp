@@ -529,6 +529,7 @@ void AddSC_felwood();
 void AddSC_feralas();
 void AddSC_moonglade();
 void AddSC_mulgore();
+void AddSC_northern_barrens_morshan();
 void AddSC_orgrimmar();
 void AddSC_silithus();
 void AddSC_stonetalon_mountains();
@@ -1603,6 +1604,7 @@ void AddKalimdorScripts()
     AddSC_feralas();
     AddSC_moonglade();
     AddSC_mulgore();
+    AddSC_northern_barrens_morshan();
     AddSC_orgrimmar();
     AddSC_silithus();
     AddSC_stonetalon_mountains();
