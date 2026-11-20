@@ -34,6 +34,9 @@ EndContentData */
 #include "Pet.h"
 #include "SpellInfo.h"
 #include "TemporarySummon.h"
+#include "Map.h"
+#include "MapManager.h"
+#include "SmartScriptMgr.h"
 #include "Group.h"
 #include "MotionMaster.h"
 #include "ObjectAccessor.h"
@@ -1855,6 +1858,101 @@ private:
     bool _returning = false;
 };
 
+/*######
+## The Short Way Home (29094): a rider who logged out on the Silver Bullet X-831
+######*/
+
+enum SilverBullet
+{
+    SILVER_BULLET_PATH              = 52201,   // the flying rocket's SmartAI waypoints (`waypoints`), Nozzlepot's Outpost to Darsok
+};
+
+// Beside the parked rocket behind Sputtervalve (ours: on the ground, 6.5 yd from the parked rocket 52203, facing it)
+static Position const SilverBulletLaunchGround = { 1145.0f, -3375.0f, 92.40f, 1.9f };
+// 5 yd, not the Bogpaddle Bullet's 25: the Silver Bullet climbs out of Nozzlepot's and comes down by Darsok slowly, so a rider
+// saved on the first or last legs is only a few yards up and fell at login (review round 1, walk M11). Ground and roofs are
+// vmaps, so nobody standing anywhere is 5 yd above what GetWaterOrGroundLevel returns.
+static constexpr float SILVER_BULLET_MIN_HEIGHT = 5.0f;
+
+static float DistToSilverBulletSegment(Position const& p, Position const& a, Position const& b)
+{
+    float const dx = b.GetPositionX() - a.GetPositionX(), dy = b.GetPositionY() - a.GetPositionY(), dz = b.GetPositionZ() - a.GetPositionZ();
+    float const len2 = dx * dx + dy * dy + dz * dz;
+    float t = 0.0f;
+    if (len2 > 0.0f)
+        t = std::max(0.0f, std::min(1.0f, ((p.GetPositionX() - a.GetPositionX()) * dx + (p.GetPositionY() - a.GetPositionY()) * dy
+            + (p.GetPositionZ() - a.GetPositionZ()) * dz) / len2));
+    Position const q(a.GetPositionX() + dx * t, a.GetPositionY() + dy * t, a.GetPositionZ() + dz * t);
+    return p.GetExactDist(&q);
+}
+
+// Within range (3D) of the rocket's flight, read from its waypoints so a route change in the DB is followed
+static bool IsNearSilverBulletPath(Position const& pos, float range)
+{
+    WPPath const* path = sSmartWaypointMgr->GetPath(SILVER_BULLET_PATH);
+    if (!path || path->empty())
+        return false;
+
+    std::vector<uint32> ids;
+    for (auto const& node : *path)
+        ids.push_back(node.first);
+    std::sort(ids.begin(), ids.end());
+
+    Position prev = SilverBulletLaunchGround;
+    for (uint32 id : ids)
+    {
+        WayPoint const* wp = path->at(id);
+        Position const next(wp->x, wp->y, wp->z);
+        if (DistToSilverBulletSegment(pos, prev, next) <= range)
+            return true;
+        prev = next;
+    }
+    return false;
+}
+
+// Backport D1 (research\_prior-region-backports.md), checked in code: the rocket boards as it is - Gyrotilt takes seat 0 when
+// the rocket enters the world (Creature::AddToWorld -> AIM_Initialize -> Vehicle::Reset -> InstallAllAccessories), and the
+// clicker's Ride Vehicle Hardcoded (seat -1) then finds seat 1: VehicleSeat 9760 has flagsB 0x02000000
+// (VEHICLE_SEAT_FLAG_B_USABLE_FORCED_4), so IsUsableByOverride holds for Vehicle::AddPassenger and GetAvailableSeatCount
+// (Aura::CanStackWith keeps Gyrotilt's aura). Unlike the Badlands rocket's seat 9199, nothing needs scripting there.
+// What it lacked is a way down for a rider who logs out in flight: the rocket (his Minion) goes with him and he is saved in
+// mid-air on the route, to fall at his next login. Before he enters the world he is moved to the ground beside the parked
+// rocket - only when all hold: map 1; no mount, flight or mounted-flight aura; within 40 yd of the rocket's route; 5 yd or
+// more above the ground or water below him (vmaps counted). The ride's credit comes at its end, so he rides again (the parked
+// rocket is visible to him while 29094 is in his log). Ours (no source says what retail did), as player_sos_bogpaddle_bullet.
+class player_barrens_silver_bullet : public PlayerScript
+{
+public:
+    player_barrens_silver_bullet() : PlayerScript("player_barrens_silver_bullet") { }
+
+    void OnLoadFromDB(Player* player) override
+    {
+        if (player->GetMapId() != 1 || player->HasAuraType(SPELL_AURA_MOUNTED) || player->HasAuraType(SPELL_AURA_FLY)
+            || player->HasAuraType(SPELL_AURA_MOD_INCREASE_MOUNTED_FLIGHT_SPEED))
+            return;
+
+        // Cheap box test first: the route lies inside x -440 .. 1145, y -3370 .. -1560
+        Position const pos = player->GetPosition();
+        if (pos.GetPositionX() < -480.0f || pos.GetPositionX() > 1185.0f || pos.GetPositionY() < -3410.0f || pos.GetPositionY() > -1520.0f)
+            return;
+
+        if (!IsNearSilverBulletPath(pos, 40.0f))
+            return;
+
+        Map* map = sMapMgr->FindBaseNonInstanceMap(1);
+        if (!map)
+            return;
+        float const below = map->GetWaterOrGroundLevel(PHASEMASK_NORMAL, pos.GetPositionX(), pos.GetPositionY(), pos.GetPositionZ());
+        if (pos.GetPositionZ() < below + SILVER_BULLET_MIN_HEIGHT)
+            return;
+
+        TC_LOG_DEBUG("scripts", "player_barrens_silver_bullet: %s logged in on the Silver Bullet X-831's route at %.1f %.1f %.1f (%.1f yd up), moved to the launch",
+            player->GetName().c_str(), pos.GetPositionX(), pos.GetPositionY(), pos.GetPositionZ(), pos.GetPositionZ() - below);
+        player->Relocate(SilverBulletLaunchGround);
+        player->SetFallInformation(0, SilverBulletLaunchGround.GetPositionZ());
+    }
+};
+
 void AddSC_the_barrens()
 {
     new npc_wizzlecrank_shredder();
@@ -1867,4 +1965,5 @@ void AddSC_the_barrens()
     new spell_script<spell_barrens_tame_echeyakee>("spell_barrens_tame_echeyakee");
     new creature_script<npc_tonga_eyes>("npc_tonga_eyes");
     new creature_script<npc_gorgal_angerscar>("npc_gorgal_angerscar");
+    new player_barrens_silver_bullet();
 }
