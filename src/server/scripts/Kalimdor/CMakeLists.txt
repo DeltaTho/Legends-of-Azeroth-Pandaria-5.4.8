@@ -131,6 +131,7 @@ set(scripts_STAT_SRCS
   Kalimdor/RazorfenKraul/instance_razorfen_kraul.cpp
   Kalimdor/RazorfenKraul/razorfen_kraul.cpp
   Kalimdor/zone_the_barrens.cpp
+  Kalimdor/zone_northern_barrens_caravans.cpp
   Kalimdor/zone_ungoro_crater.cpp
   Kalimdor/WailingCaverns/wailing_caverns.h
   Kalimdor/WailingCaverns/instance_wailing_caverns.cpp
