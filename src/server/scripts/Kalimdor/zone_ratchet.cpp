@@ -3,6 +3,7 @@
  *
  * Gazlowe's Fortune (14050): the Baron's ambush at the Curious Pirate Landmark.
  * Raging River Ride (26769): Horton Hornblower's riverboat up the Southfury River to the pier east of Nozzlepot's Outpost.
+ * Repel Boarders! (24934, Alliance): the Northwatch gryphon from Admiral Aubrey's tower to the Blackpool and back.
  *
  * What is sourced and what is ours is said at each script; nothing here is in either TDB.
  */
@@ -14,6 +15,12 @@
 #include "ObjectAccessor.h"
 #include "Player.h"
 #include "TemporarySummon.h"
+#include "WorldSession.h"
+#include "MapManager.h"
+#include "Map.h"
+#include "DBCStores.h"
+#include "ObjectMgr.h"
+#include "ScriptedGossip.h"
 #include "MotionMaster.h"
 #include "Vehicle.h"
 
@@ -459,8 +466,395 @@ private:
     bool _ended = false;
 };
 
+/*######
+## Repel Boarders! (24934, Alliance): the Northwatch gryphon from Northwatch Hold to the Blackpool and back
+######*/
+
+enum RepelBoarders
+{
+    QUEST_REPEL_BOARDERS            = 24934,
+
+    NPC_ADMIRAL_AUBREY              = 38619,
+    NPC_NATHAN_BLAINE               = 38697,
+    NPC_CAPTAIN_FISHER              = 38622,
+    NPC_NORTHWATCH_GRYPHON_OUT      = 38707,    // 72596 Summon Northwatch Gryphon
+    NPC_NORTHWATCH_GRYPHON_BACK     = 38709,    // 72609 Summon Northwatch Gryphon
+
+    BT_RIDE_TO_THE_BLACKPOOL        = 38574,    // "Admiral, can I get a ride to the Blackpool?"
+    BT_RIDE_BACK_TO_NORTHWATCH      = 38581,    // "Captain, I need a ride back to Northwatch Hold."
+    GOSSIP_ACTION_GRYPHON_RIDE      = 1001,
+    NPC_TEXT_AUBREY_HOLD_FAST       = 15393,    // BT 38573 "We must hold fast. If Northwatch falls, there is nothing to our backs but the sea!"
+    NPC_TEXT_FISHER_ALL_HANDS       = 15397,    // BT 38580 "All hands topside! Run 'em through!"
+
+    SAY_AUBREY_FLAG_DOWN_A_GRYPHON  = 0,        // BT 38583
+    SAY_BLAINE_AYE_AYE              = 0,        // BT 38584
+    SAY_FISHER_GODSPEED             = 0,        // BT 38582
+
+    SPELL_GRYPHON_RIDE_HARDCODED    = 46598,    // Ride Vehicle Hardcoded, BP0 = seat + 1
+    SUMMON_PROPERTIES_GRYPHON       = 161,      // vehicle category, as 72596 / 72609 (the gryphon is the rider's Minion)
+    GRYPHON_RIDER_SEAT              = 0,        // vehicle 1255 seat 8950: usable (flagsB 0x02000000), no exit at will, no control
+
+    POINT_GRYPHON_END               = 1,
+};
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// The flights (ours: no source has a route; question 17). Sourced shape (video kEpy1ea727k, 6.1, GitGudGuides): gossip with the
+// Admiral on the Northwatch tower top, the gryphon lifts off at once, flies out over the bay and sets the player down on the
+// Blackpool's deck about 35 s later. The way back is the same in reverse (comment 2012-05-13 [+10] "Captain Fisher gives you a
+// ride back"). Checked against the 5.4.8 maps and vmaps (research\northern-barrens\tmp\S4\hmap.py, surf.py): 45 yd or more
+// over Northwatch Hold's roofs (96-111), then over the cliff and the bay; the deck landing 6 yd from Captain Fisher on the
+// poop deck (21.1), the tower landing on the open platform (131) 8 yd from the Admiral. About 340 yd at 9.8 yd/s each way.
+// To change: GryphonSpeedRate; a landing = the last point of its route and its drop position together.
+// ---------------------------------------------------------------------------------------------------------------------------
+static float const GryphonSpeedRate = 1.4f;
+
+static Position const GryphonTowerLaunchPos = { -2216.0f, -3781.0f, 131.2f, 4.71f };
+static Position const GryphonDeckLaunchPos  = { -2161.0f, -4089.0f, 21.2f, 1.75f };
+
+static Position const GryphonRouteOut[] =
+{
+    { -2215.0f, -3792.0f, 140.0f },
+    { -2210.0f, -3830.0f, 150.0f },
+    { -2205.0f, -3880.0f, 125.0f },
+    { -2212.0f, -3950.0f,  85.0f },
+    { -2205.0f, -4020.0f,  55.0f },
+    { -2185.0f, -4070.0f,  35.0f },
+    { -2168.0f, -4088.0f,  26.0f },
+    { -2163.0f, -4092.0f,  22.5f },
+};
+static Position const GryphonDropOnDeck = { -2161.0f, -4089.0f, 21.2f, 1.0f };      // poop deck, facing Captain Fisher
+
+static Position const GryphonRouteBack[] =
+{
+    { -2168.0f, -4084.0f,  32.0f },
+    { -2185.0f, -4063.0f,  45.0f },
+    { -2205.0f, -4010.0f,  70.0f },
+    { -2212.0f, -3940.0f, 100.0f },
+    { -2208.0f, -3870.0f, 135.0f },
+    { -2212.0f, -3820.0f, 150.0f },
+    { -2214.0f, -3795.0f, 140.0f },
+    { -2214.0f, -3783.0f, 132.5f },
+};
+static Position const GryphonDropOnTower = { -2214.5f, -3779.0f, 131.2f, 2.6f };    // tower top, facing the Admiral
+
+static std::string GossipText(Player* player, uint32 broadcastTextId)
+{
+    if (BroadcastText const* text = sObjectMgr->GetBroadcastText(broadcastTextId))
+        return text->GetText(player->GetSession()->GetSessionDbcLocale(), player->GetGender());
+    return "";
+}
+
+// Not for a bot (bots choose no gossip), the dead, a player in combat or one already riding (the Bogpaddle Bullet's rules,
+// zone_swamp_of_sorrows_bullet.cpp). Checked before anyone speaks, so a refused ride plays no lines.
+static bool CanStartGryphonRide(Player* player)
+{
+    if (!player->IsInWorld() || player->GetSession()->IsBot() || !player->IsAlive())
+        return false;
+    if (player->IsInCombat())
+    {
+        player->SendGameError(GameError::ERR_NOT_IN_COMBAT);
+        return false;
+    }
+    if (player->GetVehicle() || player->IsInFlight())
+    {
+        player->GetSession()->SendNotification("You can't do that while riding.");
+        return false;
+    }
+    return true;
+}
+
+// Summons the gryphon at the launch spot and seats the player (CanStartGryphonRide has passed)
+static void StartGryphonRide(Player* player, uint32 gryphonEntry, Position const& launchPos)
+{
+
+    SummonPropertiesEntry const* properties = sSummonPropertiesStore.LookupEntry(SUMMON_PROPERTIES_GRYPHON);
+    TempSummon* gryphon = player->GetMap()->SummonCreature(gryphonEntry, launchPos, properties, 300s, player);
+    if (!gryphon || !gryphon->GetVehicleKit())
+    {
+        TC_LOG_ERROR("scripts", "zone_ratchet: could not summon the Northwatch Gryphon %u for %s", gryphonEntry, player->GetName().c_str());
+        if (gryphon)
+            gryphon->DespawnOrUnsummon();
+        return;
+    }
+
+    player->CastCustomSpell(SPELL_GRYPHON_RIDE_HARDCODED, SPELLVALUE_BASE_POINT0, GRYPHON_RIDER_SEAT + 1, gryphon, true);
+    if (player->GetVehicleBase() != gryphon)
+    {
+        TC_LOG_ERROR("scripts", "zone_ratchet: %s could not be seated on the Northwatch Gryphon", player->GetName().c_str());
+        gryphon->DespawnOrUnsummon();
+    }
+}
+
+// 38619 Admiral Aubrey (Northwatch Hold, the tower top)
+// What the player sees (sourced: the quest's log text "Speak to Admiral Aubrey to fly to the Blackpool", BT 38574 / 38583 /
+// 38584, comment 2012-05-13 [+10]): on Repel Boarders! he asks "Admiral, can I get a ride to the Blackpool?"; the Admiral calls
+// "Mister Blaine? Flag down a gryphon for <name> if you please.", Nathan Blaine answers "Aye aye sir! Immediately, sir!", and a
+// Northwatch Gryphon takes him to the ship. His greeting is "We must hold fast..." (wiki; npc_text 15393 exists, no menu row in
+// mop or either TDB). Ours: the option only while the quest is in progress; Blaine's line 1.5 s later.
+struct npc_ratchet_admiral_aubrey : public ScriptedAI
+{
+    npc_ratchet_admiral_aubrey(Creature* creature) : ScriptedAI(creature) { }
+
+    bool OnGossipHello(Player* player) override
+    {
+        if (me->IsQuestGiver())
+            player->PrepareQuestMenu(me->GetGUID());
+        if (player->GetQuestStatus(QUEST_REPEL_BOARDERS) == QUEST_STATUS_INCOMPLETE)
+            AddGossipItemFor(player, GOSSIP_ICON_CHAT, GossipText(player, BT_RIDE_TO_THE_BLACKPOOL), GOSSIP_SENDER_MAIN, GOSSIP_ACTION_GRYPHON_RIDE);
+        SendGossipMenuFor(player, NPC_TEXT_AUBREY_HOLD_FAST, me->GetGUID());
+        return true;
+    }
+
+    bool OnGossipSelect(Player* player, uint32 /*menuId*/, uint32 gossipListId) override
+    {
+        uint32 const action = player->PlayerTalkClass->GetGossipOptionAction(gossipListId);
+        CloseGossipMenuFor(player);
+        if (action != GOSSIP_ACTION_GRYPHON_RIDE || player->GetQuestStatus(QUEST_REPEL_BOARDERS) != QUEST_STATUS_INCOMPLETE
+            || !CanStartGryphonRide(player))
+            return true;
+
+        Talk(SAY_AUBREY_FLAG_DOWN_A_GRYPHON, player);
+        ObjectGuid const playerGUID = player->GetGUID();
+        Creature* aubrey = me;
+        me->m_Events.AddLambdaEventAtOffset([aubrey, playerGUID]()
+        {
+            if (Creature* blaine = aubrey->FindNearestCreature(NPC_NATHAN_BLAINE, 20.0f))
+                blaine->AI()->Talk(SAY_BLAINE_AYE_AYE, ObjectAccessor::GetPlayer(*aubrey, playerGUID));
+        }, 1500);
+        StartGryphonRide(player, NPC_NORTHWATCH_GRYPHON_OUT, GryphonTowerLaunchPos);
+        return true;
+    }
+};
+
+// 38622 Captain Fisher (the Blackpool; ender of Repel Boarders!)
+// What the player sees (sourced: comments 2012-05-13 [+10], 2012-02-08 [+1], BT 38581 / 38582): "Captain, I need a ride back to
+// Northwatch Hold." - "Godspeed, <class>!" and a gryphon takes him back to the tower; greeting "All hands topside! Run 'em
+// through!" (wiki; npc_text 15397). Ours: the option for anyone who can
+// talk to him (a player stranded on the ship needs it whatever his quests).
+struct npc_ratchet_captain_fisher : public ScriptedAI
+{
+    npc_ratchet_captain_fisher(Creature* creature) : ScriptedAI(creature) { }
+
+    bool OnGossipHello(Player* player) override
+    {
+        if (me->IsQuestGiver())
+            player->PrepareQuestMenu(me->GetGUID());
+        AddGossipItemFor(player, GOSSIP_ICON_CHAT, GossipText(player, BT_RIDE_BACK_TO_NORTHWATCH), GOSSIP_SENDER_MAIN, GOSSIP_ACTION_GRYPHON_RIDE);
+        SendGossipMenuFor(player, NPC_TEXT_FISHER_ALL_HANDS, me->GetGUID());
+        return true;
+    }
+
+    bool OnGossipSelect(Player* player, uint32 /*menuId*/, uint32 gossipListId) override
+    {
+        uint32 const action = player->PlayerTalkClass->GetGossipOptionAction(gossipListId);
+        CloseGossipMenuFor(player);
+        if (action != GOSSIP_ACTION_GRYPHON_RIDE || !CanStartGryphonRide(player))
+            return true;
+
+        Talk(SAY_FISHER_GODSPEED, player);
+        StartGryphonRide(player, NPC_NORTHWATCH_GRYPHON_BACK, GryphonDeckLaunchPos);
+        return true;
+    }
+};
+
+// 38707 / 38709 Northwatch Gryphon (vehicle 1255 from the SQL: no gryphon vehicle id exists for them in any source; 1255 is
+// the Mullan Gryphon Mount's, the same model 17697, one usable seat with no exit at will - question 17's "nearest fitting
+// vehicle"). It lifts off half a second after the player is seated, flies its route and sets him down at its end; if he is
+// gone before (logout, death) it despawns.
+struct npc_ratchet_northwatch_gryphon : public ScriptedAI
+{
+    npc_ratchet_northwatch_gryphon(Creature* creature) : ScriptedAI(creature) { }
+
+    void IsSummonedBy(Unit* /*summoner*/) override
+    {
+        me->SetReactState(REACT_PASSIVE);
+        me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_IMMUNE_TO_PC | UNIT_FLAG_IMMUNE_TO_NPC);
+        me->SetCanFly(true);
+        me->SetDisableGravity(true);
+        me->SetSpeed(MOVE_RUN, GryphonSpeedRate);
+        me->SetSpeed(MOVE_FLIGHT, GryphonSpeedRate);
+        me->setActive(true, ActiveFlags::Script);
+        _timer = 5 * IN_MILLISECONDS;   // never boarded: gone after 5 s
+    }
+
+    void JustAppeared() override { }
+    void MoveInLineOfSight(Unit* /*who*/) override { }
+    void AttackStart(Unit* /*who*/) override { }
+    void EnterEvadeMode(EvadeReason /*why*/) override { }
+
+    void PassengerBoarded(Unit* passenger, int8 /*seatId*/, bool apply) override
+    {
+        if (passenger->GetTypeId() != TYPEID_PLAYER)
+            return;
+
+        if (apply)
+        {
+            if (_state == STATE_WAITING)
+            {
+                _state = STATE_TAKE_OFF;
+                _timer = 500;
+            }
+            return;
+        }
+
+        if (_state != STATE_DONE)
+        {
+            _state = STATE_DONE;
+            me->DespawnOrUnsummon(1000);
+        }
+    }
+
+    // Vehicle::RemovePassenger overwrites any exit position with the vehicle's own unless the AI moves it (Vehicle.cpp:776-785)
+    void GetPassengerExitPosition(Unit* passenger, int8 /*seatId*/, Position& pos) override
+    {
+        if (passenger->GetTypeId() == TYPEID_PLAYER && (_state == STATE_LANDED || _state == STATE_DONE))
+            pos.Relocate(me->GetEntry() == NPC_NORTHWATCH_GRYPHON_OUT ? GryphonDropOnDeck : GryphonDropOnTower);
+    }
+
+    void MovementInform(uint32 type, uint32 id) override
+    {
+        if (type == EFFECT_MOTION_TYPE && id == POINT_GRYPHON_END && _state == STATE_FLYING)
+        {
+            _state = STATE_LANDED;
+            _timer = 500;
+        }
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        if (_state == STATE_FLYING || _state == STATE_DONE)
+            return;
+
+        if (_timer > diff)
+        {
+            _timer -= diff;
+            return;
+        }
+
+        bool const out = me->GetEntry() == NPC_NORTHWATCH_GRYPHON_OUT;
+        switch (_state)
+        {
+            case STATE_WAITING:
+                _state = STATE_DONE;
+                me->DespawnOrUnsummon();
+                break;
+            case STATE_TAKE_OFF:
+                _state = STATE_FLYING;
+                if (out)
+                    me->GetMotionMaster()->MoveSmoothPath(POINT_GRYPHON_END, GryphonRouteOut, std::extent<decltype(GryphonRouteOut)>::value, false, true);
+                else
+                    me->GetMotionMaster()->MoveSmoothPath(POINT_GRYPHON_END, GryphonRouteBack, std::extent<decltype(GryphonRouteBack)>::value, false, true);
+                break;
+            case STATE_LANDED:
+                SetRiderDown();
+                _state = STATE_DONE;
+                me->DespawnOrUnsummon(1000);
+                break;
+            default:
+                break;
+        }
+    }
+
+private:
+    enum GryphonState
+    {
+        STATE_WAITING,
+        STATE_TAKE_OFF,
+        STATE_FLYING,
+        STATE_LANDED,
+        STATE_DONE
+    };
+
+    // The rider lands on the drop spot (GetPassengerExitPosition, state LANDED)
+    void SetRiderDown()
+    {
+        Vehicle* kit = me->GetVehicleKit();
+        if (!kit)
+            return;
+
+        Unit* rider = kit->GetPassenger(GRYPHON_RIDER_SEAT);
+        if (!rider)
+        {
+            kit->RemoveAllPassengers();
+            return;
+        }
+
+        rider->ExitVehicle();
+    }
+
+    GryphonState _state = STATE_WAITING;
+    uint32 _timer = 0;
+};
+
+// A rider who logged out in flight is saved where the gryphon was, up to 150 yd over the bay or Northwatch Hold, and would
+// fall at the next login (his summons go with him). Before he enters the world he is moved to the tower top when all of these
+// hold: map 1, within 30 yd of either flight's path (launch spot to the last point), not on the Blackpool (below z 40 inside
+// the ship's box: at login the ship's collision may not be loaded and its deck would read as the bay's surface), no mount or
+// flight aura, 15 yd or more above the ground or water below him. Ours (no source says what retail did).
+class player_ratchet_northwatch_gryphon : public PlayerScript
+{
+    static float DistToSegment(Position const& p, Position const& a, Position const& b)
+    {
+        float const dx = b.GetPositionX() - a.GetPositionX(), dy = b.GetPositionY() - a.GetPositionY(), dz = b.GetPositionZ() - a.GetPositionZ();
+        float const len2 = dx * dx + dy * dy + dz * dz;
+        float t = 0.0f;
+        if (len2 > 0.0f)
+            t = std::max(0.0f, std::min(1.0f, ((p.GetPositionX() - a.GetPositionX()) * dx + (p.GetPositionY() - a.GetPositionY()) * dy + (p.GetPositionZ() - a.GetPositionZ()) * dz) / len2));
+        Position const q(a.GetPositionX() + dx * t, a.GetPositionY() + dy * t, a.GetPositionZ() + dz * t);
+        return p.GetExactDist(&q);
+    }
+
+    static bool IsNearGryphonPath(Position const& pos, Position const& launch, Position const* route, size_t count)
+    {
+        Position prev = launch;
+        for (size_t i = 0; i < count; ++i)
+        {
+            if (DistToSegment(pos, prev, route[i]) <= 30.0f)
+                return true;
+            prev = route[i];
+        }
+        return false;
+    }
+
+public:
+    player_ratchet_northwatch_gryphon() : PlayerScript("player_ratchet_northwatch_gryphon") { }
+
+    void OnLoadFromDB(Player* player) override
+    {
+        if (player->GetMapId() != 1 || player->HasAuraType(SPELL_AURA_MOUNTED) || player->HasAuraType(SPELL_AURA_FLY)
+            || player->HasAuraType(SPELL_AURA_MOD_INCREASE_MOUNTED_FLIGHT_SPEED))
+            return;
+
+        Position const pos = player->GetPosition();
+        if (pos.GetPositionX() < -2240.0f || pos.GetPositionX() > -2140.0f || pos.GetPositionY() < -4110.0f || pos.GetPositionY() > -3770.0f)
+            return;
+        if (pos.GetPositionZ() < 40.0f && pos.GetPositionX() > -2185.0f && pos.GetPositionX() < -2135.0f
+            && pos.GetPositionY() > -4110.0f && pos.GetPositionY() < -4060.0f)
+            return;
+        if (!IsNearGryphonPath(pos, GryphonTowerLaunchPos, GryphonRouteOut, std::extent<decltype(GryphonRouteOut)>::value)
+            && !IsNearGryphonPath(pos, GryphonDeckLaunchPos, GryphonRouteBack, std::extent<decltype(GryphonRouteBack)>::value))
+            return;
+
+        Map* map = sMapMgr->FindBaseNonInstanceMap(1);
+        if (!map)
+            return;
+        float const below = map->GetWaterOrGroundLevel(PHASEMASK_NORMAL, pos.GetPositionX(), pos.GetPositionY(), pos.GetPositionZ());
+        if (pos.GetPositionZ() < below + 15.0f)
+            return;
+
+        TC_LOG_DEBUG("scripts", "player_ratchet_northwatch_gryphon: %s logged in on the Northwatch Gryphon's path at %.1f %.1f %.1f, moved to the tower top",
+            player->GetName().c_str(), pos.GetPositionX(), pos.GetPositionY(), pos.GetPositionZ());
+        player->Relocate(GryphonDropOnTower);
+        player->SetFallInformation(0, GryphonDropOnTower.GetPositionZ());
+    }
+};
+
 void AddSC_ratchet()
 {
     RegisterGameObjectAI(go_ratchet_curious_pirate_landmark);
     new creature_script<npc_ratchet_riverboat>("npc_ratchet_riverboat");
+    new creature_script<npc_ratchet_admiral_aubrey>("npc_ratchet_admiral_aubrey");
+    new creature_script<npc_ratchet_captain_fisher>("npc_ratchet_captain_fisher");
+    new creature_script<npc_ratchet_northwatch_gryphon>("npc_ratchet_northwatch_gryphon");
+    new player_ratchet_northwatch_gryphon();
 }
