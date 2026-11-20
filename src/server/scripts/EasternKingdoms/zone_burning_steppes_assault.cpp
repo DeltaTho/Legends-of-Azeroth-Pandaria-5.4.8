@@ -86,8 +86,10 @@ enum AssaultData
     NPC_AODR_CAMERA                             = 48373,    // AODR Event Camera, vehicle 1324
     NPC_HELLMONDATH                             = 48409,    // Hellmondath (actor)
     NPC_BLACKROCK_RANKS                         = 48414,    // Blackrock Invader, phase 341 (cinematic only)
-    NPC_ASSAULT_INVADER                         = 48432,    // Blackrock Invader, phase 342: the objective (x200)
+    NPC_ASSAULT_INVADER                         = 48432,    // Blackrock Invader, phase 342 (346 the cowering ones): the objective (x200)
     NPC_OBSIDIAN_CLOAKED_DRAGON                 = 48434,    // vehicle 1327
+
+    PHASE_AODR_AFTERMATH                        = 346,      // "Assault on Dreadmaul Rock 2": the cowering invaders, the corpse
 
     SPELL_AODR_SUMMON_CAMERA_PHASE              = 89947,    // summons 48373 (vehicle summon) + PHASE 341; the quests' start spell
     SPELL_AODR_SUMMON_XILUN                     = 89916,
@@ -190,7 +192,7 @@ Position const AodrRitualPath[]     =
     { -7928.4f, -2567.4f, 236.0f },
 };
 // Down to the field, 36 yd east of the summoning spot and 16 yd up: Hellmondath and the ranks he runs into are within the 90 yd
-// visibility; the posed corpse of Hellmondath 48655 (phase 342, 44 yd from here) stays 76 deg or more out of the frame
+// visibility; the posed corpse of Hellmondath 48655 (44 yd from here) is in phase 346, off during the cutscene
 Position const AodrFieldPath[]      =
 {
     { -7932.0f, -2540.0f, 228.0f },
@@ -1124,6 +1126,9 @@ struct npc_bs_obsidian_cloaked_dragon : public VehicleAI
 
             // Not in the cutscene's phase (the summon copied it; 90069 then ends it on the player)
             me->SetPhased(341, true, false);
+            // The aftermath (the cowering invaders, the pit lord's corpse) as the rider has it: he gets it when 90069 ends
+            // the cutscene's aura, before or after he is seated here (spell_bs_aodr_summon_camera_phase)
+            me->SetPhased(PHASE_AODR_AFTERMATH, true, player->IsPhased(PHASE_AODR_AFTERMATH));
 
             // The flight for the controlling client (see above). Gravity off first: taking 90071 off a unit with gravity would
             // start a fall (AuraEffect::HandleAuraAllowFlight -> MoveFall) under the rider
@@ -1324,6 +1329,36 @@ class spell_bs_aodr_fiery_breath : public SpellScript
     }
 };
 
+// 89947 - AODR: Summon Camera/Phase (effect 1: PHASE 341, the cutscene). What the pit lord leaves behind - the 160 Blackrock
+// Invaders that cower and Hellmondath's posed corpse 48655, which lies where the living one is summoned - is in phase 346
+// ("Assault on Dreadmaul Rock 2"), which phase_area grants while the Assault or Glory Amidst Chaos is held and this aura is not on
+// the player. The core re-evaluates area phases on area and quest changes only, not on auras: do it when the cutscene's aura
+// lands and when it goes (every way the scene ends removes it), and give the dragon he may already sit on the same.
+// Ours: the mechanism and the split (the user's, 2026-11-20: he saw the corpse in the summoning shot)
+class spell_bs_aodr_summon_camera_phase : public AuraScript
+{
+    PrepareAuraScript(spell_bs_aodr_summon_camera_phase);
+
+    void UpdateAftermathPhase(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
+    {
+        Player* player = GetTarget()->ToPlayer();
+        if (!player)
+            return;
+
+        player->UpdateAreaAndZonePhase();
+
+        if (Creature* dragon = player->GetVehicleCreatureBase())
+            if (dragon->GetEntry() == NPC_OBSIDIAN_CLOAKED_DRAGON)
+                dragon->SetPhased(PHASE_AODR_AFTERMATH, true, player->IsPhased(PHASE_AODR_AFTERMATH));
+    }
+
+    void Register() override
+    {
+        AfterEffectApply += AuraEffectApplyFn(spell_bs_aodr_summon_camera_phase::UpdateAftermathPhase, EFFECT_1, SPELL_AURA_PHASE, AURA_EFFECT_HANDLE_REAL);
+        AfterEffectRemove += AuraEffectRemoveFn(spell_bs_aodr_summon_camera_phase::UpdateAftermathPhase, EFFECT_1, SPELL_AURA_PHASE, AURA_EFFECT_HANDLE_REAL);
+    }
+};
+
 // A player saved in the air during the Assault (in the camera, or on the dragon: both are gone at the logout) logs in above Burning
 // Steppes and would fall; with the quest held and more than 10 yd above the ground he is set down at his camp (ours). Not one on
 // a flying mount of his own (saved with him)
@@ -1382,5 +1417,6 @@ void AddSC_burning_steppes_assault()
     new creature_script<npc_bs_obsidian_cloaked_dragon>("npc_bs_obsidian_cloaked_dragon");
     new spell_script<spell_bs_aodr_teleport_back_master>("spell_bs_aodr_teleport_back_master");
     new spell_script<spell_bs_aodr_fiery_breath>("spell_bs_aodr_fiery_breath");
+    new aura_script<spell_bs_aodr_summon_camera_phase>("spell_bs_aodr_summon_camera_phase");
     new player_bs_aodr_login();
 }
