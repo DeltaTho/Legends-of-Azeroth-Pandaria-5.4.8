@@ -34,6 +34,7 @@ EndContentData */
 #include "Pet.h"
 #include "SpellInfo.h"
 #include "TemporarySummon.h"
+#include "Group.h"
 #include "MotionMaster.h"
 #include "ObjectAccessor.h"
 #include "GameObject.h"
@@ -1445,6 +1446,415 @@ private:
     bool _ended = false;
 };
 
+/*######
+## King of Centaur Mountain (13995): Gorgal Angerscar 34634, his banner and Kurak 34635
+######*/
+
+enum KingOfCentaurMountain
+{
+    QUEST_KING_OF_CENTAUR_MOUNTAIN  = 13995,
+    NPC_KURAK                       = 34635,
+    NPC_SHOE                        = 34638,
+    NPC_KOLKAR_BLOODCHARGER         = 3397,    // the wave make-up is ours (plan Q12; the video shows 2-3 Kolkar at a time, types
+    NPC_KOLKAR_STORMER              = 3273,    // not legible): the Kolkar of the Stagnant Oasis below the hill; a Stormer "hurts
+    NPC_KOLKAR_WRANGLER             = 3272,    // him most" (2011 comment); no Pack Runner. 3397's own Verog death rows (ids 2-3)
+                                               // are handed to S1, which deletes 3274's (review round 1, W2)
+    GO_HORDE_BANNER                 = 195148,
+
+    SPELL_PLANT_HORDE_BANNER        = 65804,   // GO 195148 in front of him, 150 s (his template spell2)
+    SPELL_GORGAL_MORTAL_STRIKE      = 16856,   // template spell1
+    SPELL_GORGAL_WHIRLWIND          = 15578,   // template spell4
+
+    BT_KOLKAR_FLEES                 = 34894,   // "%s flees in terror as Kurak falls."
+
+    TALK_GORGAL_ACCEPT              = 0,       // BT 34877 "Hah, yes $n! That's what I want to hear. Let's make some noise!"
+    TALK_GORGAL_BANNER              = 1,       // BT 34878 (yell) "Come get some, you horsefaced maggot farms!"
+    TALK_GORGAL_MORE                = 2,       // BT 34879 "More.... More!"
+    TALK_GORGAL_TARGET              = 3,       // BT 34881 "Ah, there's our target. I can smell him from here."
+    TALK_GORGAL_VICTORY             = 4,       // BT 34882 "Victory!"
+    TALK_GORGAL_SHOE                = 5,       // BT 34893 "Wait 'til Shoe hears about THIS."
+    TALK_GORGAL_BICKER              = 6,       // BT 34891 "Bah! Perhaps I WANT to be seen? I tire of skulking."
+    TALK_SHOE_BICKER                = 0,       // BT 34890 "Quit your pacing, mon! You're gonna be seen."
+
+    EVENT_GORGAL_CHECK              = 1,
+    EVENT_GORGAL_WAVE_1             = 2,
+    EVENT_GORGAL_WAVE_2             = 3,
+    EVENT_GORGAL_WAVE_3             = 4,
+    EVENT_GORGAL_KURAK              = 5,
+    EVENT_GORGAL_SHOE_LINE          = 6,
+    EVENT_GORGAL_GO_HOME            = 7,
+    EVENT_GORGAL_MORTAL_STRIKE      = 8,
+    EVENT_GORGAL_WHIRLWIND          = 9,
+    EVENT_GORGAL_BICKER             = 10,
+    EVENT_GORGAL_BICKER_REPLY       = 11,
+    EVENT_GORGAL_TIMEOUT            = 12,
+    EVENT_GORGAL_FLAGS_FALLBACK     = 13,
+
+    POINT_GORGAL_BANNER             = 1,
+    POINT_GORGAL_HOME               = 2,
+};
+
+// The static banner 183493 (a sniff copy of 65804's object) stood at (-1196.85, -2912.18, 118.02) facing 2.41: Gorgal stands 2 yd
+// behind that spot facing the same way, so the banner he plants lands about where the sniff saw it.
+static Position const GorgalBannerStandPos = { -1195.36f, -2913.52f, 117.08f, 2.407f };
+// The Kolkar come up from the oasis at the foot of the hill (ours). Kurak starts where the static Kurak's sniffed path began
+// (guid 310960, from -1154.8,-2956.8 up to -1180.0,-2931.9) and comes up the hill at Gorgal, so the fight is a few yards
+// downhill of the banner (the video); review round 1 (walk M2): he no longer appears out of nothing below the banner.
+static Position const KolkarWaveSpawnPos[3] =
+{
+    { -1150.0f, -2925.0f, 93.50f, 2.6f },
+    { -1158.0f, -2945.0f, 93.81f, 2.4f },
+    { -1163.0f, -2903.0f, 93.68f, 3.0f },
+};
+static Position const KurakArrivalPos = { -1154.81f, -2956.84f, 93.59f, 2.36f };
+
+static constexpr float GORGAL_ABORT_RANGE = 80.0f;
+static constexpr float GORGAL_CREDIT_RANGE = 74.0f;   // the core's group kill-credit distance (KillRewarder)
+
+// What the player sees (sourced: Wowhead 13995 comments 2010-07-07 beta [+6], 2010-12-11 [+4], 2011-01-09, 2011-09-05,
+// 2012-01-19, 2012-08-19; the wiki's lines; broadcast texts 34877-34893; video q1U-6HUmuwg (5.4.8, second-pass.md: banner at
+// ~0:17, 2-3 Kolkar at a time for ~65 s with Gorgal's lines at ~0:26, 0:44 and 1:04, then Kurak a few yards downhill, dead by
+// ~1:30, Gorgal's last line ~1:34)): on accept Gorgal says "Hah, yes $n! ... Let's make some noise!", stops offering the quest
+// and runs up the hill by the oasis, plants a Horde banner and yells "Come get some, you horsefaced maggot farms!". Kolkar
+// come up from the oasis two or three at a time and attack him (and you); "More.... More!"; then "Ah, there's our target. I can
+// smell him from here." and Kurak comes up the hill from the oasis and is fought a few yards below the banner. When Kurak falls the Kolkar still standing flee in
+// terror, Gorgal says "Victory!" and "Wait 'til Shoe hears about THIS.", and walks back down to his spot; the banner goes.
+// Leaving him (80 yd), dying, abandoning, or 4 minutes without Kurak dead ends it the same way and the quest stays incomplete
+// (sourced: "if you leave the quest giver vanishes", "abandon and redo it"). Out of the event, now and then Shoe tells him to
+// quit his pacing and he answers (comment 2010-11-23 [+18], broadcast 34890 / 34891).
+// Ours: wave make-up and spawn points (waves at +2, +18 and +30 s after the banner, Kurak at +38 s, from the video's timings),
+// his Mortal Strike / Whirlwind timers (his template spells), the 80 yd / 4 min limits, the bicker interval (2.5-4 min, only
+// with a player within 30 yd), and Kurak's kill credited by script to the starter and his group members within 74 yd who have
+// the quest (Gorgal's damage would otherwise cost them the kill: Unit::Kill gives no credit for a creature NPCs wore down).
+struct npc_gorgal_angerscar : public ScriptedAI
+{
+    npc_gorgal_angerscar(Creature* creature) : ScriptedAI(creature), _summons(creature) { }
+
+    void Reset() override
+    {
+        // An evade during the event (between waves) keeps the event: he walks back to the banner (his home while it runs)
+        if (_running)
+            return;
+
+        _events.Reset();
+        me->SetReactState(REACT_DEFENSIVE);
+        _events.ScheduleEvent(EVENT_GORGAL_BICKER, Seconds(urand(150, 240)));
+    }
+
+    void OnQuestAccept(Player* player, Quest const* quest) override
+    {
+        if (quest->GetQuestId() != QUEST_KING_OF_CENTAUR_MOUNTAIN || _running)
+            return;
+
+        _running = true;
+        _atBanner = false;
+        _kurakDead = false;
+        _playerGUID = player->GetGUID();
+        _spawnHome = me->GetHomePosition();   // his spot while idle
+        _events.Reset();
+        _summons.DespawnAll();
+
+        me->RemoveNpcFlag(NPCFlags(UNIT_NPC_FLAG_QUESTGIVER | UNIT_NPC_FLAG_GOSSIP));
+        me->SetReactState(REACT_PASSIVE);   // no detours on the way up
+        // Home is the banner from the start: an evade on the way up (something engaged him) takes him there too, and
+        // JustReachedHome plants the banner (review round 1, M1: he used to go back down and stall until the timeout)
+        me->SetHomePosition(GorgalBannerStandPos);
+        Talk(TALK_GORGAL_ACCEPT, player);
+        me->SetWalk(false);
+        me->GetMotionMaster()->MovePoint(POINT_GORGAL_BANNER, GorgalBannerStandPos);
+
+        _events.ScheduleEvent(EVENT_GORGAL_CHECK, 1s);
+        _events.ScheduleEvent(EVENT_GORGAL_TIMEOUT, 4min);
+    }
+
+    void MovementInform(uint32 type, uint32 id) override
+    {
+        if (type != POINT_MOTION_TYPE)
+            return;
+
+        if (id == POINT_GORGAL_BANNER)
+            ArriveAtBanner();
+        else if (id == POINT_GORGAL_HOME && !_running)
+            BackHome();
+    }
+
+    void ArriveAtBanner()
+    {
+        if (!_running || _atBanner)
+            return;
+
+        _atBanner = true;
+        me->SetFacingTo(GorgalBannerStandPos.GetOrientation());
+        DoCast(me, SPELL_PLANT_HORDE_BANNER, true);
+        // 65804 summons a wild object (SpellEffects.cpp SUMMON_OBJECT_WILD): it has no owner, so RemoveGameObject cannot find
+        // it. Remember it to take it away at the end (review round 1, walk M1)
+        if (GameObject* banner = me->FindNearestGameObject(GO_HORDE_BANNER, 10.0f))
+            _bannerGUID = banner->GetGUID();
+        Talk(TALK_GORGAL_BANNER);
+        me->SetReactState(REACT_AGGRESSIVE);
+        _events.ScheduleEvent(EVENT_GORGAL_WAVE_1, 2s);
+        _events.ScheduleEvent(EVENT_GORGAL_WAVE_2, 18s);
+        _events.ScheduleEvent(EVENT_GORGAL_WAVE_3, 30s);
+        _events.ScheduleEvent(EVENT_GORGAL_KURAK, 38s);
+    }
+
+    void RemoveBanner()
+    {
+        if (GameObject* banner = ObjectAccessor::GetGameObject(*me, _bannerGUID))
+            banner->Delete();
+        _bannerGUID.Clear();
+    }
+
+    // MoveTargetedHome ends here instead of at a point: on the way up (an evade; home is the banner) and on the way down
+    void JustReachedHome() override
+    {
+        if (_running && !_atBanner)
+            ArriveAtBanner();
+        else if (!_running && _returning)
+            BackHome();
+    }
+
+    void BackHome()
+    {
+        _returning = false;
+        _events.CancelEvent(EVENT_GORGAL_FLAGS_FALLBACK);
+        me->SetFacingTo(_spawnHome.GetOrientation());
+        me->SetNpcFlag(NPCFlags(me->GetCreatureTemplate()->npcflag & (UNIT_NPC_FLAG_QUESTGIVER | UNIT_NPC_FLAG_GOSSIP)));
+    }
+
+    void SummonKolkar(uint32 entry, uint32 spot)
+    {
+        Position pos = KolkarWaveSpawnPos[spot % 3];
+        pos.Relocate(pos.GetPositionX() + frand(-3.0f, 3.0f), pos.GetPositionY() + frand(-3.0f, 3.0f), pos.GetPositionZ());
+        me->SummonCreature(entry, pos, TEMPSUMMON_CORPSE_TIMED_DESPAWN, 60s);
+    }
+
+    void JustSummoned(Creature* summon) override
+    {
+        _summons.Summon(summon);
+        if (summon->IsAIEnabled)
+            summon->AI()->AttackStart(me);
+    }
+
+    void SummonedCreatureDespawn(Creature* summon) override
+    {
+        _summons.Despawn(summon);
+    }
+
+    void SummonedCreatureDies(Creature* summon, Unit* /*killer*/) override
+    {
+        if (summon->GetEntry() != NPC_KURAK || !_running || _kurakDead)
+            return;
+
+        _kurakDead = true;
+        CreditKurak(summon);
+
+        // The Kolkar still standing flee in terror (BT 34894) and are gone a few seconds later
+        for (ObjectGuid const& guid : _summons)
+            if (Creature* kolkar = ObjectAccessor::GetCreature(*me, guid))
+                if (kolkar->IsAlive() && kolkar->GetEntry() != NPC_KURAK)
+                {
+                    kolkar->TextEmote(BT_KOLKAR_FLEES);
+                    kolkar->SetReactState(REACT_PASSIVE);
+                    kolkar->CombatStop(true);
+                    kolkar->GetMotionMaster()->Clear();
+                    kolkar->GetMotionMaster()->MoveFleeing(me, 5000);
+                    kolkar->DespawnOrUnsummon(5000);
+                }
+
+        _events.CancelEvent(EVENT_GORGAL_TIMEOUT);
+        _events.CancelEvent(EVENT_GORGAL_WAVE_1);
+        _events.CancelEvent(EVENT_GORGAL_WAVE_2);
+        _events.CancelEvent(EVENT_GORGAL_WAVE_3);
+        Talk(TALK_GORGAL_VICTORY);
+        _events.ScheduleEvent(EVENT_GORGAL_SHOE_LINE, 4s);
+        _events.ScheduleEvent(EVENT_GORGAL_GO_HOME, 7s);
+    }
+
+    void CreditKurak(Creature* kurak)
+    {
+        Player* starter = ObjectAccessor::GetPlayer(*me, _playerGUID);
+        if (!starter)
+            return;
+
+        auto credit = [kurak](Player* player)
+        {
+            if (player && player->IsInWorld() && player->IsAlive() && player->GetMapId() == kurak->GetMapId()
+                && player->GetDistance(kurak) <= GORGAL_CREDIT_RANGE
+                && player->GetQuestStatus(QUEST_KING_OF_CENTAUR_MOUNTAIN) == QUEST_STATUS_INCOMPLETE)
+                player->KilledMonsterCredit(NPC_KURAK, kurak->GetGUID());
+        };
+
+        if (Group* group = starter->GetGroup())
+        {
+            for (GroupReference* itr = group->GetFirstMember(); itr; itr = itr->next())
+                credit(itr->GetSource());
+        }
+        else
+            credit(starter);
+    }
+
+    // Ends the event: the banner goes, he walks back down and offers the quest again on arrival (or after 30 s at the latest).
+    // Kurak dead: the corpses stay to be looted (they go 60 s after death; the fleeing Kolkar go by themselves). Ended early:
+    // every Kolkar and Kurak go at once.
+    void EndEvent(bool kurakKilled)
+    {
+        if (!_running)
+            return;
+
+        _running = false;
+        _atBanner = false;
+        _returning = true;
+        _events.Reset();
+        if (!kurakKilled)
+            _summons.DespawnAll();
+        RemoveBanner();
+        me->SetHomePosition(_spawnHome);
+        me->SetReactState(REACT_DEFENSIVE);
+        me->SetWalk(true);
+
+        if (me->IsInCombat())
+            EnterEvadeMode();   // home is his spot again: MoveTargetedHome, then JustReachedHome
+        else
+        {
+            me->GetMotionMaster()->Clear();
+            me->GetMotionMaster()->MovePoint(POINT_GORGAL_HOME, _spawnHome);
+        }
+
+        _events.ScheduleEvent(EVENT_GORGAL_FLAGS_FALLBACK, 30s);
+        _events.CancelEvent(EVENT_GORGAL_BICKER);   // the evade's Reset may have scheduled one already (review round 1, M3)
+        _events.ScheduleEvent(EVENT_GORGAL_BICKER, Seconds(urand(150, 240)));
+    }
+
+    void JustDied(Unit* /*killer*/) override
+    {
+        // He respawns at his spot with his flags (template); clear what the event left
+        if (_running)
+        {
+            _summons.DespawnAll();
+            RemoveBanner();
+            me->SetHomePosition(_spawnHome);
+        }
+        _running = false;
+        _returning = false;
+        _events.Reset();
+    }
+
+    void JustEngagedWith(Unit* who) override
+    {
+        ScriptedAI::JustEngagedWith(who);
+        _events.CancelEvent(EVENT_GORGAL_MORTAL_STRIKE);   // one chain each, however often he engages
+        _events.CancelEvent(EVENT_GORGAL_WHIRLWIND);
+        _events.ScheduleEvent(EVENT_GORGAL_MORTAL_STRIKE, Seconds(urand(4, 7)));
+        _events.ScheduleEvent(EVENT_GORGAL_WHIRLWIND, Seconds(urand(10, 14)));
+    }
+
+    bool StarterStillWithMe() const
+    {
+        Player* player = ObjectAccessor::GetPlayer(*me, _playerGUID);
+        return player && player->IsInWorld() && player->IsAlive() && player->GetMapId() == me->GetMapId()
+            && player->GetDistance(me) <= GORGAL_ABORT_RANGE
+            && player->GetQuestStatus(QUEST_KING_OF_CENTAUR_MOUNTAIN) == QUEST_STATUS_INCOMPLETE;
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        _events.Update(diff);
+        while (uint32 eventId = _events.ExecuteEvent())
+        {
+            switch (eventId)
+            {
+                case EVENT_GORGAL_CHECK:
+                    // Until Kurak is dead the event is the starter's: gone, dead, 80 yd away or quest dropped -> it ends
+                    if (_running && !_kurakDead && !StarterStillWithMe())
+                    {
+                        EndEvent(false);
+                        return;
+                    }
+                    if (_running)
+                        _events.ScheduleEvent(EVENT_GORGAL_CHECK, 1s);
+                    break;
+                case EVENT_GORGAL_TIMEOUT:
+                    EndEvent(false);
+                    return;
+                case EVENT_GORGAL_FLAGS_FALLBACK:
+                    if (!_running && _returning)
+                        BackHome();
+                    break;
+                case EVENT_GORGAL_WAVE_1:
+                    SummonKolkar(NPC_KOLKAR_BLOODCHARGER, 0);
+                    SummonKolkar(NPC_KOLKAR_WRANGLER, 1);
+                    break;
+                case EVENT_GORGAL_WAVE_2:
+                    Talk(TALK_GORGAL_MORE);
+                    SummonKolkar(NPC_KOLKAR_BLOODCHARGER, 2);
+                    SummonKolkar(NPC_KOLKAR_STORMER, 0);
+                    SummonKolkar(NPC_KOLKAR_WRANGLER, 1);
+                    break;
+                case EVENT_GORGAL_WAVE_3:
+                    SummonKolkar(NPC_KOLKAR_STORMER, 1);
+                    SummonKolkar(NPC_KOLKAR_BLOODCHARGER, 2);
+                    break;
+                case EVENT_GORGAL_KURAK:
+                    Talk(TALK_GORGAL_TARGET);
+                    me->SummonCreature(NPC_KURAK, KurakArrivalPos, TEMPSUMMON_CORPSE_TIMED_DESPAWN, 60s);
+                    break;
+                case EVENT_GORGAL_SHOE_LINE:
+                    Talk(TALK_GORGAL_SHOE);
+                    break;
+                case EVENT_GORGAL_GO_HOME:
+                    EndEvent(true);
+                    return;
+                case EVENT_GORGAL_MORTAL_STRIKE:
+                    if (me->IsInCombat())
+                    {
+                        DoCastVictim(SPELL_GORGAL_MORTAL_STRIKE);
+                        _events.ScheduleEvent(EVENT_GORGAL_MORTAL_STRIKE, Seconds(urand(8, 12)));
+                    }
+                    break;
+                case EVENT_GORGAL_WHIRLWIND:
+                    if (me->IsInCombat())
+                    {
+                        DoCast(me, SPELL_GORGAL_WHIRLWIND);
+                        _events.ScheduleEvent(EVENT_GORGAL_WHIRLWIND, Seconds(urand(15, 20)));
+                    }
+                    break;
+                case EVENT_GORGAL_BICKER:
+                    _events.ScheduleEvent(EVENT_GORGAL_BICKER, Seconds(urand(150, 240)));
+                    if (!_running && !me->IsInCombat() && me->FindNearestPlayer(30.0f))
+                        if (Creature* shoe = me->FindNearestCreature(NPC_SHOE, 30.0f))
+                        {
+                            sCreatureTextMgr->SendChat(shoe, TALK_SHOE_BICKER);
+                            _events.ScheduleEvent(EVENT_GORGAL_BICKER_REPLY, 4s);
+                        }
+                    break;
+                case EVENT_GORGAL_BICKER_REPLY:
+                    if (!_running && !me->IsInCombat())
+                        Talk(TALK_GORGAL_BICKER);
+                    break;
+                default:
+                    break;
+            }
+        }
+
+        if (!UpdateVictim())
+            return;
+
+        DoMeleeAttackIfReady();
+    }
+
+private:
+    EventMap _events;
+    SummonList _summons;
+    ObjectGuid _playerGUID;
+    ObjectGuid _bannerGUID;
+    Position _spawnHome;
+    bool _running = false;
+    bool _atBanner = false;
+    bool _kurakDead = false;
+    bool _returning = false;
+};
+
 void AddSC_the_barrens()
 {
     new npc_wizzlecrank_shredder();
@@ -1456,4 +1866,5 @@ void AddSC_the_barrens()
     new spell_script<spell_barrens_bandage>("spell_barrens_bandage");
     new spell_script<spell_barrens_tame_echeyakee>("spell_barrens_tame_echeyakee");
     new creature_script<npc_tonga_eyes>("npc_tonga_eyes");
+    new creature_script<npc_gorgal_angerscar>("npc_gorgal_angerscar");
 }
