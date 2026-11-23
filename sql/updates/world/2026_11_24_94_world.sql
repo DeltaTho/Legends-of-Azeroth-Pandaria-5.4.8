@@ -1,0 +1,11 @@
+-- Blasted Lands: ground runes and quest bunnies stand still.
+-- Problem: the four Blue Ground Rune Large (45117, the blue ritual circles of the Bloodwash Idolaters at the Red Reaches),
+--   the Purple Ground Rune (18562, guid 163136), the 28 Bloodwash Idol Bunnies (41430) and the 26 Okril'lon Weapons Crate
+--   Bunnies (42232) are spawned with random movement (MovementType 1, wander_distance 3), so the circles drift over the
+--   ground and the bunnies wander off the idols and crates they mark.
+-- Change: MovementType 0 and wander_distance 0 for those 59 spawns. None has a path, a formation or a phase of its own;
+--   the two Purple Ground Runes outside the zone already stand still and are not touched.
+-- Source: the creatures are spell-visual and target props (type 10, not selectable) for fixed objects; reported in play.
+-- Rollback:
+--   UPDATE `creature` SET `MovementType`=1,`wander_distance`=3 WHERE `map`=0 AND `zoneId`=4 AND `id` IN (45117,18562,41430,42232);
+UPDATE `creature` SET `MovementType`=0,`wander_distance`=0 WHERE `map`=0 AND `zoneId`=4 AND `id` IN (45117,18562,41430,42232) AND `MovementType`=1;
