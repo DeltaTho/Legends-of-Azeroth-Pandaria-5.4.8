@@ -16750,6 +16750,12 @@ void Player::RewardQuest(Quest const* quest, uint32 reward, Object* questGiver, 
                 {
                     uint32 have = GetItemCount(questObjective.ObjectID, true);
                     uint32 keep = GetItemCountNeededByOtherQuests(questObjective.ObjectID, quest_id);
+                    // Worn copies (gear, equipped bags) are never surplus. DestroyItemCount takes bag and bank copies
+                    // before equipped ones, so keeping their count out of the sweep leaves them on the character.
+                    for (uint8 slot = EQUIPMENT_SLOT_START; slot < INVENTORY_SLOT_BAG_END; ++slot)
+                        if (Item* worn = GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+                            if (worn->GetEntry() == questObjective.ObjectID)
+                                keep += worn->GetCount();
                     if (have > keep)
                         amount = std::max(amount, have - keep);
                 }
