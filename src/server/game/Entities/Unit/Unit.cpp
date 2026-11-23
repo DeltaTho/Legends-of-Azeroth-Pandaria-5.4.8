@@ -11949,6 +11949,13 @@ void Unit::SetInCombatState(bool PvP, Unit* enemy)
 
     SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IN_COMBAT);
 
+    // On a player's pet (or a unit he charms) the client shows UNIT_FLAG_PET_IN_COMBAT as "pet is fighting" (PET_ATTACK_START /
+    // PET_ATTACK_STOP, the pulsing pet portrait). Set it when such a unit enters combat by itself, not only through its owner's
+    // combat below, since ClearInCombat / CombatManager drop it when it leaves. Guardians and totems are left alone: the client
+    // fires the same events for them, and one of them leaving combat would switch the pet's glow off mid-fight.
+    if (GetTypeId() == TYPEID_UNIT && IsControlledByPlayer() && (IsPet() || IsCharmed()))
+        SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_PET_IN_COMBAT);
+
     if (Creature* creature = ToCreature())
     {
         // Set home position at place of engaging combat for escorted creatures
@@ -11991,7 +11998,10 @@ void Unit::SetInCombatState(bool PvP, Unit* enemy)
         if (GetCritterGUID() == it->GetGUID())
             continue;
         it->SetInCombatState(PvP, enemy);
-        it->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_PET_IN_COMBAT);
+        // A pet or charmed unit carries the flag only while it is in combat itself (not when dead or evading, where
+        // SetInCombatState returned early and nothing would clear it). Guardians keep the old behaviour.
+        if (it->IsInCombat() || (!it->IsPet() && !it->IsCharmed()))
+            it->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_PET_IN_COMBAT);
     }
 
     if (Player* player = ToPlayer())
@@ -12026,7 +12036,10 @@ void Unit::ClearInCombat()
         if (HasFlag(OBJECT_FIELD_DYNAMIC_FLAGS, UNIT_DYNFLAG_TAPPED))
             SetUInt32Value(OBJECT_FIELD_DYNAMIC_FLAGS, creature->GetCreatureTemplate()->dynamicflags);
 
-        if (!IsCharmed())
+        // A player's pet is owned, not charmed: it must drop UNIT_FLAG_PET_IN_COMBAT here too, or the flag set by its
+        // owner's combat (SetInCombatState) or its own stays for good and the client keeps the pet's portrait pulsing red
+        // as if it were still fighting. Guardians and totems keep the old behaviour (see SetInCombatState).
+        if (!IsCharmed() && !(IsPet() && IsControlledByPlayer()))
             return;
     }
 
