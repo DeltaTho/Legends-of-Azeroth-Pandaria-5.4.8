@@ -286,10 +286,14 @@ bool FollowMovementGenerator::Update(Unit* owner, uint32 diff)
         DoMovementInform(owner, target);
     }
 
+    // On an elevator that carries both, the target moves only when its place on the car changes: the lift moving them
+    // together is no reason to re-path, which relaunched the follower's spline on every update. Ships: as before.
+    Position const targetFramePosition = (IsElevator(owner->GetTransport()) && owner->GetTransport() == target->GetTransport()) ?
+        target->m_movementInfo.transport.pos : target->GetPosition();
     bool const targetPositionChanged = !_lastTargetPosition ||
-        _lastTargetPosition->GetExactDistSq(target->GetPosition()) > 0.0f;
+        _lastTargetPosition->GetExactDistSq(targetFramePosition) > 0.0f;
     if (targetPositionChanged)
-        _lastTargetPosition = target->GetPosition();
+        _lastTargetPosition = targetFramePosition;
 
     if (targetPositionChanged ||
         (!owner->HasUnitState(UNIT_STATE_FOLLOW_MOVE) && !PositionOkay(owner, target, _range + FOLLOW_RANGE_TOLERANCE)))
