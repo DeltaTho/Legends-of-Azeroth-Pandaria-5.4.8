@@ -56,6 +56,12 @@ EndScriptData */
 ## of the lines (SmartAI rows); "nothing happens" for a click without the quest.
 ## Every way out ends with the box gone: the exit button, death, logout, a teleport (Unit::_ExitVehicle despawns a vehicle
 ## Minion when its owner leaves it), 5 s outside the mine, the quest dropped.
+## What is seen: 41174 itself is an invisible stalker (display 32335). The crate around the player is a second creature, the
+## Inconspicuous Box 41176 (display 31378, an Alliance crate at scale 2.5, not selectable), riding 41174 in one of its two
+## passenger seats (CreatureDisplayInfo / VehicleSeat data; no sniff of the accessory exists in either TDB).
+## Ours: which seat when. Seats 7856 (index 0, at the vehicle's height) and 7857 (index 1, 0.5 yd higher) are the only two that
+## can be switched between, and the sources have the box drop over the player's feet when he stands still: the crate sits in
+## seat 0 while the box stands and in seat 1 while it moves.
 ######*/
 
 namespace
@@ -67,12 +73,15 @@ enum InconspicuousBox
     SPELL_SUMMON_BOX                    = 77052,
     SPELL_BOX_VEHICLE_TRIGGER_AURA      = 77044,
 
-    NPC_INCONSPICUOUS_BOX               = 41174,
+    NPC_INCONSPICUOUS_BOX               = 41174, // the vehicle: an invisible stalker
+    NPC_INCONSPICUOUS_BOX_CRATE         = 41176, // the crate that is seen, a passenger of the vehicle
     NPC_NETHERGARDE_ENGINEER            = 5997,
     NPC_NETHERGARDE_FOREMAN             = 5998,
     NPC_REASSURING_NETHERGARDE_FOREMAN  = 41171,
     NPC_CHIEF_PROSPECTOR_HONDO          = 41173,
 
+    SEAT_BOX_CRATE_LOWERED              = 0,    // seat 7856: the crate on the ground, over the player's feet
+    SEAT_BOX_CRATE_RAISED               = 1,    // seat 7857: 0.5 yd higher, his feet show
     SEAT_BOX_CONTROL                    = 2,    // seat 7858: the only seat of vehicle 810 with CAN_CONTROL
 
     AREA_NETHERGARDE_MINES              = 1457,
@@ -82,6 +91,7 @@ enum InconspicuousBox
 
     EVENT_BOX_NO_RIDER                  = 1,
     EVENT_BOX_CHECK                     = 2,
+    EVENT_BOX_CRATE                     = 3,
 };
 
 float const BoxLineRange = 10.0f;               // 77049's radius (index 13)
@@ -157,6 +167,8 @@ struct go_bl_inconspicuous_box : public GameObjectAI
 
 // 41174 Inconspicuous Box. The summon seats the player in the first free seat (index 0, which cannot steer); he is moved to the
 // control seat. While he rides, 77044 pulses 77049 every 250 ms (the speakers' lines, spell_bl_box_vehicle_trigger).
+// The vehicle has no model of its own: once the player steers it, the crate 41176 is summoned into its passenger seat, raised
+// while the box moves and lowered when it stands, and goes with the box.
 struct npc_bl_inconspicuous_box : public VehicleAI
 {
     npc_bl_inconspicuous_box(Creature* creature) : VehicleAI(creature) { }
@@ -199,8 +211,10 @@ struct npc_bl_inconspicuous_box : public VehicleAI
             _seated = true;
             _outsideSec = 0;
             me->CastSpell(me, SPELL_BOX_VEHICLE_TRIGGER_AURA, true);
+            SummonCrate();
             _events.CancelEvent(EVENT_BOX_NO_RIDER);
             _events.ScheduleEvent(EVENT_BOX_CHECK, 1s);
+            _events.ScheduleEvent(EVENT_BOX_CRATE, 250ms);
             return;
         }
 
@@ -212,6 +226,7 @@ struct npc_bl_inconspicuous_box : public VehicleAI
         _seated = false;
         _events.Reset();
         me->RemoveAurasDueToSpell(SPELL_BOX_VEHICLE_TRIGGER_AURA);
+        DespawnCrate();
         me->DespawnOrUnsummon(1);
     }
 
@@ -226,8 +241,15 @@ struct npc_bl_inconspicuous_box : public VehicleAI
             {
                 case EVENT_BOX_NO_RIDER:
                     if (!_seated)
+                    {
+                        DespawnCrate();
                         me->DespawnOrUnsummon();
+                    }
                     return;
+                case EVENT_BOX_CRATE:
+                    UpdateCrate();
+                    _events.ScheduleEvent(EVENT_BOX_CRATE, 250ms);
+                    break;
                 case EVENT_BOX_CHECK:
                     if (!Check())
                         return;
@@ -246,6 +268,7 @@ private:
         Player* player = ObjectAccessor::GetPlayer(*me, _playerGUID);
         if (!player || player->GetVehicleBase() != me)
         {
+            DespawnCrate();
             me->DespawnOrUnsummon();
             return false;
         }
@@ -279,8 +302,52 @@ private:
         return true;
     }
 
+    // The crate that is seen: summoned on the box and seated as its passenger (its PassengerBoarded call is not the player's
+    // and changes nothing above)
+    void SummonCrate()
+    {
+        if (!_crateGUID.IsEmpty())
+            return;
+
+        TempSummon* crate = me->SummonCreature(NPC_INCONSPICUOUS_BOX_CRATE, *me, TEMPSUMMON_MANUAL_DESPAWN, 0ms, 0, me->GetPrivateObjectOwner());
+        if (!crate)
+            return;
+
+        crate->SetReactState(REACT_PASSIVE);
+        crate->EnterVehicle(me, SEAT_BOX_CRATE_LOWERED);
+        if (crate->GetVehicleBase() != me)
+        {
+            TC_LOG_ERROR("scripts", "Inconspicuous Box: the crate %u did not board the box %u (seat %d)",
+                uint32(NPC_INCONSPICUOUS_BOX_CRATE), uint32(NPC_INCONSPICUOUS_BOX), int32(SEAT_BOX_CRATE_LOWERED));
+            crate->DespawnOrUnsummon();
+            return;
+        }
+
+        _crateGUID = crate->GetGUID();
+    }
+
+    // Four times a second: the crate is up while the box moves and down while it stands
+    void UpdateCrate()
+    {
+        Creature* crate = ObjectAccessor::GetCreature(*me, _crateGUID);
+        if (!crate || crate->GetVehicleBase() != me)
+            return;
+
+        int8 const seat = me->isMoving() ? SEAT_BOX_CRATE_RAISED : SEAT_BOX_CRATE_LOWERED;
+        if (crate->GetTransSeat() != seat)
+            crate->ChangeSeat(seat);
+    }
+
+    void DespawnCrate()
+    {
+        if (Creature* crate = ObjectAccessor::GetCreature(*me, _crateGUID))
+            crate->DespawnOrUnsummon(1);
+        _crateGUID.Clear();
+    }
+
     EventMap _events;
     ObjectGuid _playerGUID;
+    ObjectGuid _crateGUID;
     uint32 _outsideSec = 0;
     uint32 _lastAreaId = 0;
     bool _seated = false;
