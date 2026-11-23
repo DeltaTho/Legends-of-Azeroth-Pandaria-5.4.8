@@ -387,7 +387,12 @@ bool CombatManager::UpdateOwnerCombatState() const
     if (combatState)
         _owner->SetInCombatState(false); // PvE combat, non-PvP
     else
+    {
         _owner->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IN_COMBAT);
+        // Leaving combat this way skips Unit::ClearInCombat, so drop a pet's combat flag here as well (see there).
+        if (_owner->GetTypeId() == TYPEID_UNIT && (_owner->IsCharmed() || (_owner->IsPet() && _owner->IsControlledByPlayer())))
+            _owner->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_PET_IN_COMBAT);
+    }
 
     return true;
 }
