@@ -35,6 +35,7 @@
 #include "GameObjectModel.h"
 #include "Totem.h"
 #include "MoveSpline.h"
+#include "MoveSplineInit.h"
 #include "ZoneScript.h"
 #include "MMapFactory.h"
 #include "G3D/Matrix4.h"
@@ -1504,4 +1505,70 @@ void Transport::LogStopFramePosition()
         sailing ? "sail" : (_stopFrameTargetProgress ? "dock" : "hold"), m_goValue.Transport.PathProgress, _stopFrames.front(),
         uint32(GetGoState()), GetUInt32Value(GAMEOBJECT_FIELD_LEVEL), now, GetPositionX(), GetPositionY(), GetPositionZ(),
         GetOrientation(), uint32(riders));
+}
+
+bool Transport::IsInsideBounds(Position const& pos, float extents) const
+{
+    if (GameObjectDisplayInfoEntry const* displayInfo = sGameObjectDisplayInfoStore.LookupEntry(GetGOInfo()->displayId))
+        if (displayInfo->minX != 0 || displayInfo->maxX != 0 || displayInfo->minY != 0 || displayInfo->maxY != 0 || displayInfo->minZ != 0 || displayInfo->maxZ != 0)
+            return IsAtInteractDistance(pos, extents);
+
+    return true;    // no GeoBox: AddToTransportIfNeeded assumes the object is inside, and so do we
+}
+
+bool Transport::SwitchFollowerTransport(Creature* follower, Transport* to)
+{
+    Transport* const from = follower->GetTransport();
+    if (from == to)
+        return false;
+
+    // end the running spline in the frame it was launched in (world or the old transport) before the frame changes
+    follower->StopMoving();
+
+    if (from)
+        from->RemovePassenger(follower);    // keeps the world position; clears a lift's IGNORE_PATHFINDING
+
+    if (to)
+        follower->AddToTransportIfNeeded(to, false, FOLLOWER_BOARD_EXTENTS);
+
+    // RemovePassenger clears IGNORE_PATHFINDING after a lift; give it back to a creature whose template asks for it
+    if (!follower->GetTransport() && (follower->GetCreatureTemplate()->flags_extra & CREATURE_FLAG_EXTRA_IGNORE_PATHFINDING))
+        follower->AddUnitState(UNIT_STATE_IGNORE_PATHFINDING);
+
+    if (follower->GetTransport() == from)
+        return false;
+
+    // Clients learn a creature's transport only from its movement: a zero-length spline where it stands, built after
+    // the change, carries the transport guid and offset (or none once it got off), so they attach the creature to the
+    // car or let it go. Without it a creature standing still stays where it was on their screens.
+    if (follower->IsInWorld())
+    {
+        Movement::MoveSplineInit init(follower);
+        init.MoveTo(follower->GetPositionX(), follower->GetPositionY(), follower->GetPositionZ(), false, true);
+        init.SetFacing(follower->GetOrientation());
+        init.Launch();
+    }
+
+    return true;
+}
+
+void Transport::DropFollowerIfOffElevator(Creature* creature)
+{
+    Transport* const transport = creature->GetTransport();
+    if (!transport || transport->GetGoType() != GAMEOBJECT_TYPE_TRANSPORT || !creature->IsAlive())
+        return;
+
+    // only a player's creatures (the ones FollowMovementGenerator boards, or summoned aboard by a player);
+    // possessed and vehicle creatures are moved by someone else
+    if (!creature->GetCharmerOrOwnerGUID().IsPlayer() && !creature->GetCreatorGUID().IsPlayer())
+        return;
+    if (creature->isPossessed() || creature->GetVehicle() || creature->IsVehicle())
+        return;
+    if (transport->GetStaticPassengers().count(creature))
+        return;
+
+    if (transport->IsInsideBounds(creature->GetPosition(), FOLLOWER_LEAVE_EXTENTS))
+        return;
+
+    SwitchFollowerTransport(creature, nullptr);
 }

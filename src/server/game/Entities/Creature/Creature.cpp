@@ -667,6 +667,10 @@ void Creature::Update(uint32 diff)
 
     UpdateMovementFlags();
 
+    // a player's pet / summon that has walked off an elevator car leaves it (one pointer test for everyone else)
+    if (GetTransport())
+        Transport::DropFollowerIfOffElevator(this);
+
     switch (m_deathState)
     {
         case JUST_RESPAWNED:

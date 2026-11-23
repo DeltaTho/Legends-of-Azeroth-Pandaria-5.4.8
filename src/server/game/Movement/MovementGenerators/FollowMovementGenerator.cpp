@@ -23,10 +23,68 @@
 #include "Optional.h"
 #include "PathGenerator.h"
 #include "Pet.h"
+#include "Transport.h"
 #include "Unit.h"
 #include "Util.h"
 
 #include <cmath>
+
+// A creature following the player it belongs to (pet, guardian, minion, companion, charmed creature, a summon the
+// player created) rides the player's elevator (type 11 transport) with him. Only the player is ever made a passenger
+// by the movement handler (it reads the client's transport guid); a follower stayed in world coordinates, so it fell
+// through the rising floor and was dragged up after its owner, and on the way down it was left above and pulled back
+// every update. Ships and zeppelins (type 15) are left as they were: boarding them would need deck pathfinding and
+// map-change handling for followers that this core does not have (research/core-pet-transport/report.md).
+static float const FOLLOWER_BOARD_DIST_2D = 10.0f;  // board only near the owner (the #221 re-anchor threshold)
+static float const FOLLOWER_BOARD_DIST_Z = 3.0f;    // ... and on his level, never under or over a moving floor
+
+static bool FollowsOwnerPlayer(Unit* follower, Unit* target)
+{
+    if (follower->GetTypeId() != TYPEID_UNIT || target->GetTypeId() != TYPEID_PLAYER)
+        return false;
+
+    // a possessed creature is moved by its player's client; a creature on or carrying a vehicle is moved by the vehicle
+    if (follower->isPossessed() || follower->GetVehicle() || follower->IsVehicle())
+        return false;
+
+    ObjectGuid const targetGuid = target->GetGUID();
+    return follower->GetCharmerOrOwnerGUID() == targetGuid || follower->GetCreatorGUID() == targetGuid ||
+        target->GetCritterGUID() == follower->GetGUID();
+}
+
+static bool IsElevator(Transport const* transport)
+{
+    return transport && transport->GetGoType() == GAMEOBJECT_TYPE_TRANSPORT;
+}
+
+// Puts the follower on its owner's elevator, or takes it off when the owner has left it. Returns true on a change.
+// Getting off when the follower walks off the car while not following (combat, fear) is Transport::DropFollowerIfOffElevator.
+static bool SyncFollowerTransport(Creature* follower, Unit* owner)
+{
+    // the owner seated in a vehicle: the vehicle, not the owner, is on the transport - leave the follower as it is
+    if (owner->GetVehicle())
+        return false;
+
+    Transport* const current = follower->GetTransport();
+    // a ship / zeppelin the follower is on (summoned aboard): not ours to manage, as before
+    if (current && !IsElevator(current))
+        return false;
+
+    Transport* const wanted = IsElevator(owner->GetTransport()) ? owner->GetTransport() : nullptr;
+    if (current == wanted)
+        return false;
+
+    bool const board = wanted && wanted->IsInWorld() && wanted->GetMap() == follower->GetMap() &&
+        follower->GetExactDist2d(owner) <= FOLLOWER_BOARD_DIST_2D &&
+        std::fabs(follower->GetPositionZ() - owner->GetPositionZ()) <= FOLLOWER_BOARD_DIST_Z &&
+        wanted->IsInsideBounds(follower->GetPosition(), Transport::FOLLOWER_BOARD_EXTENTS);
+
+    // not aboard anything and not close enough yet: keep following, retried on every update
+    if (!current && !board)
+        return false;
+
+    return Transport::SwitchFollowerTransport(follower, board ? wanted : nullptr);
+}
 
 static void DoMovementInform(Unit* owner, Unit* target)
 {
@@ -129,6 +187,13 @@ bool FollowMovementGenerator::Update(Unit* owner, uint32 diff)
     Unit* const target = GetTarget();
     if (!target || !target->IsInWorld())
         return false;
+
+    // board or leave the owner's elevator with him (see SyncFollowerTransport; ships and zeppelins: unchanged)
+    if (FollowsOwnerPlayer(owner, target) && SyncFollowerTransport(owner->ToCreature(), target))
+    {
+        _path = nullptr;
+        _lastTargetPosition.reset();
+    }
 
     // issue #221 (AC parity, TargetedMovementGenerator.cpp:637-648): a pet following its own master is allowed
     // to cheat the mmap path, exactly like its master. Without this the pet stops on the first PATHFIND_NOPATH
