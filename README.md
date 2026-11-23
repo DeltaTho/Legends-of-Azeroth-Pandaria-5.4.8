@@ -31,6 +31,9 @@ passes will be required to test and validate the alliance's perspective.
 | Eastern Plaguelands | Merged into `playerbot-beta` |
 | Badlands | On [`pr/badlands`](../../tree/pr/badlands), not merged yet |
 | Searing Gorge | On [`pr/searing-gorge`](../../tree/pr/searing-gorge), not merged yet |
+| Burning Steppes | On [`pr/burning-steppes`](../../tree/pr/burning-steppes), not merged yet |
+| Swamp of Sorrows | On [`pr/swamp-of-sorrows`](../../tree/pr/swamp-of-sorrows), not merged yet |
+| Blasted Lands | On [`pr/blasted-lands`](../../tree/pr/blasted-lands), not merged yet |
 
 ## Branches
 
@@ -41,5 +44,8 @@ passes will be required to test and validate the alliance's perspective.
 - `pr/badlands`: the Badlands set.
 - `pr/searing-gorge`: the Searing Gorge set, on top of `pr/badlands` (both add to the same
   script lists).
+- `pr/burning-steppes`: the Burning Steppes set, on top of `pr/searing-gorge`.
+- `pr/swamp-of-sorrows`: the Swamp of Sorrows set, on top of `pr/burning-steppes`.
+- `pr/blasted-lands`: the Blasted Lands set, on top of `pr/swamp-of-sorrows`.
 
 Branches of regions that have been merged are removed.
