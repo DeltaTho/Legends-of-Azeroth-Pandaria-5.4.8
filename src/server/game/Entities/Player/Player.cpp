@@ -16697,6 +16697,35 @@ bool Player::CanSelectQuestPackageItem(QuestPackageItemEntry const* questPackage
     return false;
 }
 
+// How many of ItemDrop[i] to take after the item objectives took theirs (0 = none). An ItemDrop that is also an item objective
+// was already taken by the objective, so only what goes beyond the objective amount is taken: otherwise objective 10593 x1 +
+// ItemDrop 10593 x1 (25771) took 2 from a stack and the Darkmoon decks (30449-30452) a second deck. After a surplus sweep
+// (0x02000000) such an ItemDrop is skipped: what is left is kept for other quests. ItemDropQuantity 0 still means "every one".
+static uint32 GetItemDropCountToTake(Quest const* quest, uint8 i, bool surplusSwept)
+{
+    uint32 count = quest->ItemDropQuantity[i];
+    bool isObjective = false;
+    for (auto const& questObjective : quest->GetObjectives())
+    {
+        if (questObjective.Type == QUEST_OBJECTIVE_ITEM && questObjective.ObjectID == quest->ItemDrop[i])
+        {
+            isObjective = true;
+            if (count)
+            {
+                uint32 taken = uint32(std::max(questObjective.Amount, 0));
+                count = count > taken ? count - taken : 0;
+                if (!count)
+                    return 0;
+            }
+        }
+    }
+
+    if (isObjective && surplusSwept)
+        return 0;
+
+    return quest->ItemDropQuantity[i] ? count : 9999;
+}
+
 void Player::RewardQuest(Quest const* quest, uint32 reward, Object* questGiver, bool announce)
 {
     //this THING should be here to protect code from quest, which cast on player far teleport as a reward
@@ -16712,7 +16741,20 @@ void Player::RewardQuest(Quest const* quest, uint32 reward, Object* questGiver, 
         {
             case QUEST_OBJECTIVE_ITEM:
             {
-                DestroyItemCount(questObjective.ObjectID, questObjective.Amount, true);
+                uint32 amount = uint32(std::max(questObjective.Amount, 0));
+
+                // Loot is not capped to what the quest still needs (retail wasn't either), so 29/30 + a stack of 2 leaves a
+                // surplus. Retail flagged the quests whose surplus goes at turn-in (Flags 0x02000000, TC master RewardQuest);
+                // unflagged ones (most dailies) keep it. Unlike TC, copies another quest in the log still needs are left.
+                if (quest->HasFlag(QUEST_FLAGS_REMOVE_SURPLUS_ITEMS))
+                {
+                    uint32 have = GetItemCount(questObjective.ObjectID, true);
+                    uint32 keep = GetItemCountNeededByOtherQuests(questObjective.ObjectID, quest_id);
+                    if (have > keep)
+                        amount = std::max(amount, have - keep);
+                }
+
+                DestroyItemCount(questObjective.ObjectID, amount, true);
                 break;
             }
             case QUEST_OBJECTIVE_CURRENCY:
@@ -16733,33 +16775,17 @@ void Player::RewardQuest(Quest const* quest, uint32 reward, Object* questGiver, 
         }
     }
 
-    for (uint8 i = 0; i < QUEST_ITEM_DROP_COUNT; ++i)
+    // FlagsEx 0x1 "Keep Additional Items" (TC master): the ItemDrop items stay, e.g. the Tongue of Ba-Shon 81712 between the
+    // Isle of Thunder steps that all start from it, or the trainee weapon of The Lesson of the Iron Bough (30027-30038).
+    if (!quest->HasFlagEx(QUEST_FLAGS_EX_NO_ITEM_REMOVAL))
     {
-        if (quest->ItemDrop[i])
+        for (uint8 i = 0; i < QUEST_ITEM_DROP_COUNT; ++i)
         {
-            uint32 count = quest->ItemDropQuantity[i];
+            if (!quest->ItemDrop[i])
+                continue;
 
-            // An ItemDrop that is also an item objective was already taken above; only take what goes beyond the
-            // objective amount. Otherwise objective 10593 x1 + ItemDrop 10593 x1 (25771) took 2 from a stack, and
-            // 30489 (79952 x100 twice) took 200. Quantity 0 still means "take every one left".
-            if (count)
-            {
-                for (auto const& questObjective : quest->GetObjectives())
-                {
-                    if (questObjective.Type == QUEST_OBJECTIVE_ITEM && questObjective.ObjectID == quest->ItemDrop[i])
-                    {
-                        uint32 taken = uint32(std::max(questObjective.Amount, 0));
-                        count = count > taken ? count - taken : 0;
-                    }
-                }
-
-                if (!count)
-                    continue;
-            }
-            else
-                count = 9999;
-
-            DestroyItemCount(quest->ItemDrop[i], count, true);
+            if (uint32 count = GetItemDropCountToTake(quest, i, quest->HasFlag(QUEST_FLAGS_REMOVE_SURPLUS_ITEMS)))
+                DestroyItemCount(quest->ItemDrop[i], count, true);
         }
     }
 
@@ -17781,15 +17807,21 @@ void Player::DestroyQuestItems(uint32 questId)
 {
     if (Quest const* quest = sObjectMgr->GetQuestTemplate(questId))
     {
-        // Destroy quest items on quest fail or abandon.
+        // Destroy quest items on quest fail or abandon. Only quest-bound ones, as TC does: unbound objectives are the player's
+        // own goods (60 Runecloth for 7795, the 25771 Draenethyst Fragment) and were deleted on abandon. No surplus sweep here.
         for (auto const& objective : quest->Objectives)
             if (objective.Type == QUEST_OBJECTIVE_ITEM)
-                DestroyItemCount(objective.ObjectID, objective.Amount, true, true);
+                if (ItemTemplate const* proto = sObjectMgr->GetItemTemplate(objective.ObjectID))
+                    if (proto->Bonding == BIND_QUEST)
+                        DestroyItemCount(objective.ObjectID, objective.Amount, true, true);
 
-        // Destroy items received during the quest.
+        // Destroy items received during the quest; one that is also an objective only beyond the objective amount (as at turn-in).
         for (uint8 i = 0; i < QUEST_ITEM_DROP_COUNT; ++i)
-            if (quest->ItemDrop[i] && quest->ItemDropQuantity[i] && sObjectMgr->GetItemTemplate(quest->ItemDrop[i])->Bonding == BIND_QUEST)
-                DestroyItemCount(quest->ItemDrop[i], quest->ItemDropQuantity[i], true, true);
+            if (quest->ItemDrop[i] && quest->ItemDropQuantity[i])
+                if (ItemTemplate const* proto = sObjectMgr->GetItemTemplate(quest->ItemDrop[i]))
+                    if (proto->Bonding == BIND_QUEST)
+                        if (uint32 count = GetItemDropCountToTake(quest, i, false))
+                            DestroyItemCount(quest->ItemDrop[i], count, true, true);
     }
 }
 
@@ -18326,6 +18358,29 @@ void Player::QuestObjectiveSatisfy(uint32 objectId, uint32 amount, uint8 type, u
             }
         }
     }
+}
+
+// How many copies of itemId the other quests in the log (incomplete or complete, not yet turned in) need as an item objective.
+// The surplus sweep at turn-in leaves these, so a "Remove Extra Get-Items" quest doesn't empty another quest's objective.
+uint32 Player::GetItemCountNeededByOtherQuests(uint32 itemId, uint32 exceptQuestId) const
+{
+    uint32 needed = 0;
+    for (uint8 i = 0; i < MAX_QUEST_LOG_SIZE; ++i)
+    {
+        uint32 questId = GetQuestSlotQuestId(i);
+        if (!questId || questId == exceptQuestId)
+            continue;
+
+        QuestStatusMap::const_iterator itr = m_QuestStatus.find(questId);
+        if (itr == m_QuestStatus.end() || (itr->second.Status != QUEST_STATUS_INCOMPLETE && itr->second.Status != QUEST_STATUS_COMPLETE))
+            continue;
+
+        if (Quest const* qInfo = sObjectMgr->GetQuestTemplate(questId))
+            for (auto const& questObjective : qInfo->Objectives)
+                if (questObjective.Type == QUEST_OBJECTIVE_ITEM && questObjective.ObjectID == itemId && questObjective.Amount > 0)
+                    needed += uint32(questObjective.Amount);
+    }
+    return needed;
 }
 
 bool Player::HasQuestForItem(uint32 itemId) const
