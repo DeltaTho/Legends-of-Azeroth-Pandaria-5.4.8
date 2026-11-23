@@ -27,6 +27,7 @@
 #include "Pet.h"
 #include "SpellHistory.h"
 #include "Random.h"
+#include "Battleground.h"
 
 enum WarlockSpells
 {
@@ -1024,12 +1025,10 @@ class spell_warl_soul_harverst : public SpellScriptLoader
         {
             PrepareAuraScript(spell_warl_soul_harverst_AuraScript);
 
-            uint32 update;
+            uint32 update = 0; // Validate runs once on the loader's copy, not on each aura's script, so it cannot initialise this
 
             bool Validate(SpellInfo const* /*spellInfo*/) override
             {
-                update = 0;
-
                 if (!sSpellMgr->GetSpellInfo(101976))
                     return false;
                 return true;
@@ -1041,18 +1040,30 @@ class spell_warl_soul_harverst : public SpellScriptLoader
 
                 if (update >= 1000)
                 {
-                    if (Player* _player = GetCaster()->ToPlayer())
-                    {
-                        if (!_player->IsInCombat() && !_player->InArena() && _player->IsAlive())
-                        {
-                            _player->SetHealth(_player->GetHealth() + int32(_player->GetMaxHealth() / 50));
-
-                            if (Pet* pet = _player->GetPet())
-                                pet->SetHealth(pet->GetHealth() + int32(pet->GetMaxHealth() / 50));
-                        }
-                    }
-
                     update = 0;
+
+                    // In 5.4.8 both the warlock (class skill line 849) and his demon (its demon skill line) learn this passive at
+                    // level 27, each holding its own aura. So each aura heals only its holder: the warlock's copy the warlock, the
+                    // demon's copy the demon, 2% of max health a second each, as the tooltip says ("You and your demon").
+                    Unit* holder = GetUnitOwner();
+                    if (!holder)
+                        return;
+
+                    Player* warlock = holder->GetCharmerOrOwnerPlayerOrPlayerItself();
+                    if (!warlock || !warlock->IsAlive() || warlock->IsInCombat())
+                        return;
+
+                    // SPELL_ATTR4_NOT_USABLE_IN_ARENA_OR_RATED_BG, as Unit::RegenerateHealth honours it for effect 1
+                    if (Battleground const* bg = warlock->GetBattlegorund())
+                        if (bg->IsArena() || bg->IsRatedBG())
+                            return;
+
+                    // The warlock himself or his active demon only (not a demon mind-controlled by another player)
+                    if (holder != warlock && holder != warlock->GetPet())
+                        return;
+
+                    if (holder->IsAlive() && !holder->IsInCombat())
+                        holder->SetHealth(holder->GetHealth() + holder->CountPctFromMaxHealth(2));
                 }
             }
 
