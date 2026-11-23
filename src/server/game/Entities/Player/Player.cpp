@@ -16154,13 +16154,23 @@ bool Player::CanTakeQuest(Quest const* quest, bool msg)
         && SatisfyQuestConditions(quest, msg);
 }
 
-bool Player::CanAddQuest(Quest const* quest, bool msg)
+// The quest is being taken from its own source item (StartItem == the starter, e.g. 25772 from Flawless Draenethyst
+// Sphere 8244). The accept handler keeps that item, so no copy is handed out and none needs bag space (TC #23250).
+// Tied to the giver, not to the item's StartQuest, so a shared or GM-added quest still hands out the source item.
+static bool IsQuestTakenFromSourceItem(Quest const* quest, Object const* questGiver)
+{
+    return questGiver && quest->GetSrcItemId()
+        && (questGiver->GetTypeId() == TYPEID_ITEM || questGiver->GetTypeId() == TYPEID_CONTAINER)
+        && questGiver->GetEntry() == quest->GetSrcItemId();
+}
+
+bool Player::CanAddQuest(Quest const* quest, bool msg, Object const* questGiver)
 {
     if (!SatisfyQuestLog(msg))
         return false;
 
     uint32 srcitem = quest->GetSrcItemId();
-    if (srcitem > 0)
+    if (srcitem > 0 && !IsQuestTakenFromSourceItem(quest, questGiver))
     {
         ItemPosCountVec dest;
         InventoryResult msg2 = CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, srcitem, QUEST_SOURCE_ITEM_COUNT);
@@ -16489,7 +16499,7 @@ void Player::AddQuest(Quest const* quest, Object* questGiver)
         m_questObjectiveStatusSave.emplace(questObjective.ID, true);
     }
 
-    GiveQuestSourceItem(quest);
+    GiveQuestSourceItem(quest, questGiver);
     AdjustQuestReqItemCount(quest, questStatusData);
 
     uint32 qtime = 0;
@@ -16728,7 +16738,28 @@ void Player::RewardQuest(Quest const* quest, uint32 reward, Object* questGiver, 
         if (quest->ItemDrop[i])
         {
             uint32 count = quest->ItemDropQuantity[i];
-            DestroyItemCount(quest->ItemDrop[i], count ? count : 9999, true);
+
+            // An ItemDrop that is also an item objective was already taken above; only take what goes beyond the
+            // objective amount. Otherwise objective 10593 x1 + ItemDrop 10593 x1 (25771) took 2 from a stack, and
+            // 30489 (79952 x100 twice) took 200. Quantity 0 still means "take every one left".
+            if (count)
+            {
+                for (auto const& questObjective : quest->GetObjectives())
+                {
+                    if (questObjective.Type == QUEST_OBJECTIVE_ITEM && questObjective.ObjectID == quest->ItemDrop[i])
+                    {
+                        uint32 taken = uint32(std::max(questObjective.Amount, 0));
+                        count = count > taken ? count - taken : 0;
+                    }
+                }
+
+                if (!count)
+                    continue;
+            }
+            else
+                count = 9999;
+
+            DestroyItemCount(quest->ItemDrop[i], count, true);
         }
     }
 
@@ -17410,11 +17441,15 @@ bool Player::SatisfyQuestMonth(Quest const* qInfo, bool /*msg*/)
     return m_monthlyquests.find(qInfo->GetQuestId()) == m_monthlyquests.end();
 }
 
-bool Player::GiveQuestSourceItem(Quest const* quest)
+bool Player::GiveQuestSourceItem(Quest const* quest, Object const* questGiver)
 {
     uint32 srcitem = quest->GetSrcItemId();
     if (srcitem > 0)
     {
+        // Don't give a second copy of the item the quest is being taken from; the accept handler keeps that one
+        if (IsQuestTakenFromSourceItem(quest, questGiver))
+            return true;
+
         ItemPosCountVec dest;
         InventoryResult msg = CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, srcitem, QUEST_SOURCE_ITEM_COUNT);
         if (msg == EQUIP_ERR_OK)
