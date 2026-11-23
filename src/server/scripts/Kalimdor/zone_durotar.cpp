@@ -28,6 +28,8 @@
 #include "CreatureTextMgr.h"
 #include "DatabaseEnv.h"
 #include "Group.h"
+#include "Map.h"
+#include "TemporarySummon.h"
 #include <mutex>
 #include <set>
 
@@ -1755,6 +1757,581 @@ struct npc_captive_pitescale_scout : public ScriptedAI
     }
 };
 
+/*######
+## Quest 25167: Breaking the Chain
+## npc_northwatch_caravan_spawner, npc_northwatch_caravan
+######*/
+
+namespace
+{
+
+// Sourced: Wowhead 25167 2010-11-23 [+3] "Northwatch Lug's will spawn carrying a crate", 2010-12-12 [+4] "they spawn from two
+// places ... go for the crates first (if you're ranged)"; warcraft.wiki.gg Notes "the Northwatch Lugs spawn at regular intervals. If
+// left unmolested, they will form a chain of mobs between the spawn point and the encampments in Northwatch Foothold ... coming three
+// to a crate"; 2012-08-31 [+1] on 39245 (attacked lugs chase, then stay where they stopped). The data: Spell.dbc 73691 / 73736 / 73737
+// Summon Northwatch Caravan A / B / C (39244 / 39318 / 39319, SummonProperties 64 = wild); the caravans are invisible walkers
+// (InvisibleStalker 17345) with VehicleId 680 / 684 / 685: seats 7603 7604 7607 (A), 7615 (B), 7617 7621 (C) ride the Walk animation
+// with the upper body holding up the load (HoldRifle / ChannelCastOmni), and 7605 / 7616 / 7619 sit 0.47 higher: the crate on top.
+// Both TDBs spawn the lugs and crates as static groups (1, 2 or 3 lugs under a crate) along the way: snapshots of the caravans of all
+// three kinds; mop's 17 caravan spawns with their short sniffed paths (removed 2026-11-18, 2026_11_27_95) trace the routes:
+// B from the northern spawner east and then west to the camp of the Valley of Trials plan, A and C from the two southern spawners
+// up the ridge to the camp of the Orgrimmar plan (every one of the 17 caravans and of the TDBs' groups fits that split).
+// Ours: the timings (a caravan every 14-18 s from each spawner, at most 11 alive each, routes filled at once when the first player
+// comes within 300 yd, nothing new after 60 s without one), the few route points between the sniffed pieces, what happens when a
+// caravan is attacked (it stops, the lugs set the crate down and fight; what is left is cleared once nothing of it is in combat for
+// 30 s, or 90 s while the crate is still alive), the lugs' places when they put the crate down (the seats' attachment offsets x10, which matches the TDBs'
+// snapshots), and despawning at the camp. Not built: the old beta note (2010-10-31) and 2012-03-16 [+1] that a crate falling off
+// its seat crushes its carriers (it would cost the player the lugs' credit).
+enum BreakingTheChain
+{
+    NPC_NORTHWATCH_CARAVAN_A            = 39244,
+    NPC_NORTHWATCH_CARAVAN_B            = 39318,
+    NPC_NORTHWATCH_CARAVAN_C            = 39319,
+
+    DATA_CARAVAN_NEXT_POINT             = 1,
+    POINT_CARAVAN_ROUTE                 = 1,        // + route index
+
+    CARAVAN_MAX_SEATS                   = 4,
+    CARAVAN_MAX_ALIVE_PER_SPAWNER       = 11,       // ~160 s on the way / ~16 s apart, so the cap only bites when caravans are held up
+    CARAVAN_INTERVAL_MIN_MS             = 14 * IN_MILLISECONDS,
+    CARAVAN_INTERVAL_MAX_MS             = 18 * IN_MILLISECONDS,
+    CARAVAN_SPAWNER_CHECK_MS            = 5 * IN_MILLISECONDS,
+    CARAVAN_SPAWNER_IDLE_MS             = 60 * IN_MILLISECONDS,
+    CARAVAN_CHECK_MS                    = 250,
+    CARAVAN_COLLECT_MS                  = 3 * IN_MILLISECONDS,
+    CARAVAN_CLEAR_AFTER_FIGHT_MS        = 30 * IN_MILLISECONDS,     // nothing of it in combat for this long
+    CARAVAN_CLEAR_CRATE_LEFT_MS         = 90 * IN_MILLISECONDS,     // the same while the crate is still alive (time to destroy it)
+    CARAVAN_CLEAR_LAST_RESORT_MS        = 540 * IN_MILLISECONDS,    // just under the caravan's own 10 min limit
+};
+
+float const CARAVAN_PLAYER_RANGE = 300.0f;          // most of the routes (Sen'jin's hub is ~314 yd away and does not wake them)
+
+struct CaravanSeat
+{
+    int8 SeatId;
+    bool IsCrate;
+    float Forward, Left;                            // where a lug puts the crate down and stands, from the caravan's centre
+};
+
+struct CaravanRoute
+{
+    uint32 Entry;
+    Position Spawner;                               // the Caravan Spawner A (39255) this caravan starts from
+    Position const* Points;
+    size_t Count;
+    float SeedSpacing;                              // yd between caravans when a route is filled at once (interval x walk speed)
+    CaravanSeat Seats[CARAVAN_MAX_SEATS];
+    size_t SeatCount;
+};
+
+// A: three lugs and the crate, from the southern spawner to the Orgrimmar plan's camp (398 yd, walk 2.5 yd/s: ~160 s)
+Position const CaravanRouteA[] =
+{
+    { -1061.00f, -4733.00f, 16.50f },   // mop caravan 252830's sniffed path
+    { -1030.65f, -4724.10f, 14.68f },   // TDB group 309485 (2x 39249, 39245, crate)
+    { -1021.23f, -4720.60f, 15.19f },   // TDB group 308283 (the same)
+    { -1012.67f, -4712.58f, 16.48f },   // 252818 (A)
+    { -1006.66f, -4705.92f, 17.64f },
+    { -1001.35f, -4698.66f, 19.58f },
+    { -995.45f, -4690.59f, 22.50f },
+    { -992.30f, -4686.31f, 24.09f },
+    { -984.22f, -4679.60f, 26.42f },    // 252814 (C)
+    { -982.75f, -4671.74f, 27.65f },
+    { -980.36f, -4658.97f, 28.98f },
+    { -977.29f, -4642.40f, 29.73f },
+    { -978.90f, -4625.00f, 25.46f },    // ours, between two sniffed pieces
+    { -980.37f, -4609.93f, 25.59f },    // 252768 (C)
+    { -983.36f, -4584.47f, 26.80f },
+    { -985.51f, -4566.62f, 25.70f },
+    { -996.05f, -4562.85f, 25.94f },    // 252758 (A)
+    { -999.38f, -4529.25f, 25.86f },
+    { -1009.25f, -4516.66f, 25.44f },   // 252772 / 252791 (A)
+    { -1020.68f, -4502.05f, 25.75f },
+    { -1019.30f, -4463.00f, 31.35f },   // ours, over the rise
+    { -1016.21f, -4423.52f, 26.16f },   // 252743 (A)
+    { -1001.40f, -4419.92f, 27.49f },
+    { -993.23f, -4419.83f, 29.26f },    // the end of 252743's path, beside the camp
+};
+
+// C: two lugs and the crate, from the middle spawner, joining A's way (398 yd, ~160 s)
+Position const CaravanRouteC[] =
+{
+    { -1045.07f, -4722.71f, 16.17f },   // 252826 (C)
+    { -1022.15f, -4713.33f, 16.47f },   // TDB group 309473 (2x 39245, crate)
+    { -1012.67f, -4712.58f, 16.48f },
+    { -1006.66f, -4705.92f, 17.64f },
+    { -1001.35f, -4698.66f, 19.58f },
+    { -995.45f, -4690.59f, 22.50f },
+    { -992.30f, -4686.31f, 24.09f },
+    { -984.22f, -4679.60f, 26.42f },
+    { -982.75f, -4671.74f, 27.65f },
+    { -980.36f, -4658.97f, 28.98f },
+    { -977.29f, -4642.40f, 29.73f },
+    { -978.90f, -4625.00f, 25.46f },
+    { -980.37f, -4609.93f, 25.59f },
+    { -983.36f, -4584.47f, 26.80f },
+    { -985.51f, -4566.62f, 25.70f },
+    { -987.17f, -4536.44f, 25.80f },    // 252754 (C)
+    { -1009.25f, -4516.66f, 25.44f },
+    { -1020.68f, -4502.05f, 25.75f },
+    { -1019.30f, -4463.00f, 31.35f },
+    { -1016.21f, -4423.52f, 26.16f },
+    { -1001.40f, -4419.92f, 27.49f },
+    { -993.23f, -4419.83f, 29.26f },
+};
+
+// B: one lug and the crate, from the northern spawner to the Valley of Trials plan's camp (221 yd, walk 1.5 yd/s: ~150 s)
+Position const CaravanRouteB[] =
+{
+    { -1066.67f, -4696.88f, 17.08f },   // 252777 (B)
+    { -1060.42f, -4700.00f, 17.49f },
+    { -1040.85f, -4700.11f, 17.34f },   // 252823 (B)
+    { -1028.92f, -4698.90f, 20.14f },   // 252764 (B)
+    { -1017.01f, -4697.66f, 21.59f },
+    { -1002.84f, -4684.58f, 25.06f },   // 252809 (B)
+    { -997.43f, -4677.05f, 26.82f },
+    { -991.83f, -4668.00f, 28.13f },
+    { -984.47f, -4652.23f, 30.38f },    // TDB group 308279 (39249, crate)
+    { -979.50f, -4637.50f, 25.59f },    // ours, down the slope
+    { -993.19f, -4615.53f, 25.73f },    // 252748 (B)
+    { -1010.92f, -4603.45f, 25.73f },
+    { -1034.08f, -4598.88f, 25.63f },   // 252796 (B)
+    { -1057.25f, -4598.04f, 25.82f },   // the end of 252796's path, beside the camp
+};
+
+CaravanRoute const CaravanRoutes[] =
+{
+    { NPC_NORTHWATCH_CARAVAN_A, { -1066.41f, -4733.66f, 16.58f, 0.02f }, CaravanRouteA, std::size(CaravanRouteA), 40.0f,
+        { { 0, false, 0.0f, 1.8f }, { 1, false, -1.2f, -1.0f }, { 2, true, 0.0f, 0.0f }, { 3, false, 1.1f, -1.0f } }, 4 },
+    { NPC_NORTHWATCH_CARAVAN_B, { -1070.25f, -4698.30f, 16.81f, 6.11f }, CaravanRouteB, std::size(CaravanRouteB), 24.0f,
+        { { 0, false, -1.5f, 0.0f }, { 1, true, 0.0f, 0.0f } }, 2 },   // both seats are at 0/0: the lug steps back from the crate (ours)
+    { NPC_NORTHWATCH_CARAVAN_C, { -1069.62f, -4716.30f, 16.66f, 0.73f }, CaravanRouteC, std::size(CaravanRouteC), 40.0f,
+        { { 0, false, 0.0f, 1.8f }, { 1, false, 0.0f, -1.8f }, { 2, true, 0.0f, 0.0f } }, 3 },
+};
+
+static CaravanRoute const* GetCaravanRouteByEntry(uint32 entry)
+{
+    for (CaravanRoute const& route : CaravanRoutes)
+        if (route.Entry == entry)
+            return &route;
+    return nullptr;
+}
+
+// 39244 / 39318 / 39319 - Northwatch Caravan A / B / C: an invisible walker carrying its lugs and crate (vehicle_template_accessory,
+// seated by the core when the caravan appears) along its route. A caravan is attacked when any of its lugs or its crate is in combat,
+// hurt, dead or off its seat (checked every 250 ms; a lug also pulls a player who comes into its aggro range on the way): it stops,
+// the crate is set down (it drops to the ground and can be destroyed there) and the lugs get off and fight the attacker. The caravan
+// never walks on empty and nothing re-boards; it clears what is left once nothing of it has been in combat for 30 s (90 s while the
+// crate is alive), never in the middle of a fight, and at the end of its route it despawns with its load. Accessories are not minions (a minion accessory is unsummoned as soon as it leaves its
+// seat, Unit::_ExitVehicle) and have their own 10 min out-of-combat limit; the caravan has a 10 min limit too (TEMPSUMMON_TIMED_DESPAWN
+// from the spawner). Active, so it walks on where no player is near.
+struct npc_northwatch_caravan : public ScriptedAI
+{
+    enum class CaravanState { Starting, Walking, Stopped, Done };
+
+    npc_northwatch_caravan(Creature* creature) : ScriptedAI(creature), _route(GetCaravanRouteByEntry(creature->GetEntry())) { }
+
+    void InitializeAI() override
+    {
+        ScriptedAI::InitializeAI();
+        me->SetReactState(REACT_PASSIVE);
+    }
+
+    void IsSummonedBy(Unit* /*summoner*/) override
+    {
+        me->setActive(true, ActiveFlags::Script);
+    }
+
+    void SetData(uint32 type, uint32 value) override
+    {
+        if (type == DATA_CARAVAN_NEXT_POINT && _state == CaravanState::Starting)
+            _nextPoint = value;
+    }
+
+    void AttackStart(Unit* /*who*/) override { }
+    void MoveInLineOfSight(Unit* /*who*/) override { }
+    void EnterEvadeMode(EvadeReason /*why*/) override { }     // never walk "home" to the spawner
+
+    // Where a lug (or the crate) stands when it gets off: its place around the crate, not the caravan's centre
+    void GetPassengerExitPosition(Unit* /*passenger*/, int8 seatId, Position& pos) override
+    {
+        if (!_route)
+            return;
+
+        for (size_t i = 0; i < _route->SeatCount; ++i)
+        {
+            CaravanSeat const& seat = _route->Seats[i];
+            if (seat.SeatId != seatId)
+                continue;
+
+            float const o = me->GetOrientation();
+            float const x = me->GetPositionX() + seat.Forward * std::cos(o) - seat.Left * std::sin(o);
+            float const y = me->GetPositionY() + seat.Forward * std::sin(o) + seat.Left * std::cos(o);
+            float z = me->GetPositionZ();
+            me->UpdateAllowedPositionZ(x, y, z);
+            pos.Relocate(x, y, z, o);
+            return;
+        }
+    }
+
+    void MovementInform(uint32 type, uint32 pointId) override
+    {
+        if (type != POINT_MOTION_TYPE || _state != CaravanState::Walking || !_route || pointId != POINT_CARAVAN_ROUTE + _nextPoint)
+            return;
+
+        ++_nextPoint;
+        if (_nextPoint < _route->Count)
+            MoveToNextPoint();
+        else
+            _arrived = true;                    // despawned from UpdateAI, not from inside the movement generator
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        if (_state == CaravanState::Done)
+            return;
+
+        if (!_route)
+        {
+            _state = CaravanState::Done;
+            me->DespawnOrUnsummon();
+            return;
+        }
+
+        if (_state == CaravanState::Starting)
+        {
+            _state = CaravanState::Walking;
+            me->SetWalk(true);
+            if (_nextPoint >= _route->Count)
+                _arrived = true;
+            else
+                MoveToNextPoint();
+        }
+
+        if (_checkTimer > diff)
+        {
+            _checkTimer -= diff;
+            return;
+        }
+        uint32 const elapsed = CARAVAN_CHECK_MS - _checkTimer + diff;
+        _checkTimer = CARAVAN_CHECK_MS;
+
+        if (_state == CaravanState::Walking)
+        {
+            if (_collectMs < CARAVAN_COLLECT_MS)
+            {
+                _collectMs += elapsed;
+                CollectLoad();
+                if (_collectMs >= CARAVAN_COLLECT_MS && !HasAnyLoad())
+                {
+                    TC_LOG_ERROR("scripts", "npc_northwatch_caravan: caravan %u (entry %u) got no lugs or crate from vehicle_template_accessory; "
+                        "despawned", me->GetGUID().GetCounter(), me->GetEntry());
+                    Finish();
+                    return;
+                }
+            }
+
+            if (_arrived)
+            {
+                Finish();
+                return;
+            }
+
+            if (Unit* attacker = nullptr; IsAttacked(attacker))
+                Stop(attacker);
+            return;
+        }
+
+        // Stopped: clear up once the fight is over
+        _stoppedMs += elapsed;
+        bool anyAlive = false;
+        bool anyInCombat = false;
+        bool crateAlive = false;
+        for (size_t i = 0; i < _route->SeatCount; ++i)
+        {
+            Creature* member = _load[i].IsEmpty() ? nullptr : ObjectAccessor::GetCreature(*me, _load[i]);
+            if (!member || !member->IsAlive())
+                continue;
+            anyAlive = true;
+            if (_route->Seats[i].IsCrate)
+                crateAlive = true;
+            if (member->IsInCombat())
+                anyInCombat = true;
+        }
+
+        if (anyInCombat)
+            _quietMs = 0;
+        else
+            _quietMs += elapsed;
+
+        // Never in the middle of a fight; an untouched crate is left long enough to be destroyed. The last resort is for a crate
+        // that stays in combat with a player who walked off (NullCreatureAI never evades).
+        uint32 const quietNeeded = crateAlive ? CARAVAN_CLEAR_CRATE_LEFT_MS : CARAVAN_CLEAR_AFTER_FIGHT_MS;
+        if (!anyAlive || _quietMs >= quietNeeded || _stoppedMs >= CARAVAN_CLEAR_LAST_RESORT_MS)
+            Finish();
+    }
+
+private:
+    void MoveToNextPoint()
+    {
+        Position const& point = _route->Points[_nextPoint];
+        me->GetMotionMaster()->MovePoint(POINT_CARAVAN_ROUTE + _nextPoint, point.GetPositionX(), point.GetPositionY(), point.GetPositionZ());
+    }
+
+    Vehicle* Kit() const { return me->GetVehicleKit(); }
+
+    // The core seats the accessories when the caravan appears (Vehicle::Reset from AIM_Initialize and again on the first update);
+    // remember who sits where
+    void CollectLoad()
+    {
+        Vehicle* kit = Kit();
+        if (!kit)
+            return;
+
+        for (size_t i = 0; i < _route->SeatCount; ++i)
+            if (_load[i].IsEmpty())
+                if (Unit* passenger = kit->GetPassenger(_route->Seats[i].SeatId))
+                    _load[i] = passenger->GetGUID();
+    }
+
+    bool HasAnyLoad() const
+    {
+        for (size_t i = 0; i < _route->SeatCount; ++i)
+            if (!_load[i].IsEmpty())
+                return true;
+        return false;
+    }
+
+    bool IsAttacked(Unit*& attacker)
+    {
+        bool attacked = false;
+        for (size_t i = 0; i < _route->SeatCount; ++i)
+        {
+            if (_load[i].IsEmpty())
+                continue;
+
+            Creature* member = ObjectAccessor::GetCreature(*me, _load[i]);
+            if (!member || !member->IsAlive() || member->GetVehicleBase() != me || member->IsInCombat()
+                || member->GetHealth() < member->GetMaxHealth())
+                attacked = true;
+
+            if (!attacker && member)
+                attacker = FindAttacker(member);
+        }
+        return attacked;
+    }
+
+    Unit* FindAttacker(Creature* member) const
+    {
+        if (member->IsAlive())
+        {
+            if (Unit* victim = member->GetVictim())
+                return victim;
+            if (Unit* target = member->GetCombatManager().GetAnyTarget())
+                return target;
+        }
+        return member->GetLootRecipient();      // who hit it first (also kept on a corpse)
+    }
+
+    void Stop(Unit* attacker)
+    {
+        _state = CaravanState::Stopped;
+        me->GetMotionMaster()->Clear();
+        me->GetMotionMaster()->MoveIdle();
+        me->StopMoving();
+
+        Vehicle* kit = Kit();
+        for (size_t i = 0; i < _route->SeatCount; ++i)
+        {
+            Creature* member = _load[i].IsEmpty() ? nullptr : ObjectAccessor::GetCreature(*me, _load[i]);
+            if (!member || !member->IsAlive() || !kit || member->GetVehicle() != kit)
+                continue;
+
+            member->ExitVehicle();              // the crate drops to the ground (Unit::_ExitVehicle starts the fall)
+            if (_route->Seats[i].IsCrate)
+                continue;
+
+            // An evading lug walks back to where it put the crate down, not to the spawner it was summoned at
+            member->SetHomePosition(member->GetPosition());
+            if (!member->IsInCombat() && attacker && attacker->IsInWorld() && attacker->IsAlive() && member->IsAIEnabled
+                && member->IsValidAttackTarget(attacker))
+                member->AI()->AttackStart(attacker);
+        }
+
+        // Nothing should ride an emptied caravan (it is unselectable; RemovePassenger gives it the spellclick flag back)
+        me->RemoveFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_SPELLCLICK);
+    }
+
+    // Despawn whatever of the load is alive (corpses decay by their own summon type), then the caravan
+    void Finish()
+    {
+        _state = CaravanState::Done;
+        for (ObjectGuid const& guid : _load)
+            if (Creature* member = guid.IsEmpty() ? nullptr : ObjectAccessor::GetCreature(*me, guid))
+                if (member->IsAlive())
+                    member->DespawnOrUnsummon();
+        me->DespawnOrUnsummon();
+    }
+
+    CaravanRoute const* _route;
+    CaravanState _state = CaravanState::Starting;
+    size_t _nextPoint = 0;
+    bool _arrived = false;
+    uint32 _checkTimer = CARAVAN_CHECK_MS;
+    uint32 _collectMs = 0;
+    uint32 _stoppedMs = 0;
+    uint32 _quietMs = 0;
+    ObjectGuid _load[CARAVAN_MAX_SEATS];
+};
+
+// 39255 - Northwatch Caravan Spawner A (three spawns on the shore; mop's and both TDBs' positions): each sends out its own caravan
+// kind (the caravans and TDB groups standing on each spot: B at the northern one, C in the middle, A at the southern one). While a
+// player (bots included) is within 300 yd it sends one every 14-18 s, at most 11 alive; when it wakes with none out it fills its route
+// at once, spaced as if it had been running, so a player arriving finds the chain. Active, because the route's far end is beyond the
+// range at which the map updates it for a player there.
+struct npc_northwatch_caravan_spawner : public ScriptedAI
+{
+    npc_northwatch_caravan_spawner(Creature* creature) : ScriptedAI(creature) { }
+
+    void InitializeAI() override
+    {
+        ScriptedAI::InitializeAI();
+        me->SetReactState(REACT_PASSIVE);
+    }
+
+    void JustAppeared() override
+    {
+        ScriptedAI::JustAppeared();
+        _route = nullptr;
+        for (CaravanRoute const& route : CaravanRoutes)
+            if (me->GetHomePosition().GetExactDist2d(&route.Spawner) < 5.0f)
+                _route = &route;
+
+        if (!_route)
+        {
+            TC_LOG_ERROR("scripts", "npc_northwatch_caravan_spawner: spawner %u at (%.1f, %.1f) is not one of the three Breaking the Chain spawners",
+                me->GetGUID().GetCounter(), me->GetHomePosition().GetPositionX(), me->GetHomePosition().GetPositionY());
+            return;
+        }
+
+        me->setActive(true, ActiveFlags::Script);
+        _awake = false;
+        _idleMs = 0;
+        _checkTimer = 0;
+        _spawnTimer = urand(CARAVAN_INTERVAL_MIN_MS, CARAVAN_INTERVAL_MAX_MS);
+    }
+
+    void AttackStart(Unit* /*who*/) override { }
+    void MoveInLineOfSight(Unit* /*who*/) override { }
+    void EnterEvadeMode(EvadeReason /*why*/) override { }
+
+    void UpdateAI(uint32 diff) override
+    {
+        if (!_route)
+            return;
+
+        if (_checkTimer <= diff)
+        {
+            _checkTimer = CARAVAN_SPAWNER_CHECK_MS;
+            PruneCaravans();
+
+            if (IsPlayerNear())
+            {
+                _idleMs = 0;
+                if (!_awake)
+                {
+                    _awake = true;
+                    if (_caravans.empty())
+                        FillRoute();
+                    _spawnTimer = urand(CARAVAN_INTERVAL_MIN_MS, CARAVAN_INTERVAL_MAX_MS);
+                }
+            }
+            else if (_awake)
+            {
+                _idleMs += CARAVAN_SPAWNER_CHECK_MS;
+                if (_idleMs >= CARAVAN_SPAWNER_IDLE_MS)
+                    _awake = false;             // what is out walks on to the camp and despawns there
+            }
+        }
+        else
+            _checkTimer -= diff;
+
+        if (!_awake)
+            return;
+
+        if (_spawnTimer > diff)
+        {
+            _spawnTimer -= diff;
+            return;
+        }
+
+        _spawnTimer = urand(CARAVAN_INTERVAL_MIN_MS, CARAVAN_INTERVAL_MAX_MS);
+        PruneCaravans();
+        if (_caravans.size() < CARAVAN_MAX_ALIVE_PER_SPAWNER)
+            SendCaravan(me->GetHomePosition(), 0);
+    }
+
+private:
+    bool IsPlayerNear() const
+    {
+        Map::PlayerList const& players = me->GetMap()->GetPlayers();
+        for (Map::PlayerList::const_iterator itr = players.begin(); itr != players.end(); ++itr)
+            if (Player* player = itr->GetSource())
+                if (player->IsInWorld() && player->GetDistance2d(me) < CARAVAN_PLAYER_RANGE)
+                    return true;
+        return false;
+    }
+
+    void PruneCaravans()
+    {
+        _caravans.erase(std::remove_if(_caravans.begin(), _caravans.end(), [this](ObjectGuid const& guid)
+        {
+            Creature* caravan = ObjectAccessor::GetCreature(*me, guid);
+            return !caravan || !caravan->IsInWorld();
+        }), _caravans.end());
+    }
+
+    void SendCaravan(Position const& pos, size_t nextPoint)
+    {
+        if (TempSummon* caravan = me->SummonCreature(_route->Entry, pos, TEMPSUMMON_TIMED_DESPAWN, 10min))
+        {
+            if (caravan->IsAIEnabled)
+                caravan->AI()->SetData(DATA_CARAVAN_NEXT_POINT, uint32(nextPoint));
+            _caravans.push_back(caravan->GetGUID());
+        }
+    }
+
+    // Caravans along the route every SeedSpacing yd, each walking on from the route point it stands at
+    void FillRoute()
+    {
+        float walked = 0.0f;
+        float nextAt = _route->SeedSpacing;
+        Position prev = me->GetHomePosition();
+        for (size_t i = 0; i + 1 < _route->Count && _caravans.size() + 1 < CARAVAN_MAX_ALIVE_PER_SPAWNER; ++i)
+        {
+            Position const& point = _route->Points[i];
+            walked += prev.GetExactDist2d(&point);
+            prev = point;
+            if (walked < nextAt)
+                continue;
+
+            nextAt = walked + _route->SeedSpacing;
+            Position const& next = _route->Points[i + 1];
+            Position pos(point.GetPositionX(), point.GetPositionY(), point.GetPositionZ(), point.GetAngle(&next));
+            SendCaravan(pos, i + 1);
+        }
+    }
+
+    CaravanRoute const* _route = nullptr;
+    std::vector<ObjectGuid> _caravans;
+    bool _awake = false;
+    uint32 _idleMs = 0;
+    uint32 _checkTimer = 0;
+    uint32 _spawnTimer = 0;
+};
+
+} // namespace
+
 enum VoodooSpells
 {
     SPELL_BREW      = 16712, // Special Brew
@@ -2522,6 +3099,8 @@ void AddSC_durotar()
     new creature_script<npc_durotar_grandmatron_tekla>("npc_durotar_grandmatron_tekla");
     new creature_script<npc_darkspear_jailor>("npc_darkspear_jailor");
     new creature_script<npc_captive_pitescale_scout>("npc_captive_pitescale_scout");
+    new creature_script<npc_northwatch_caravan_spawner>("npc_northwatch_caravan_spawner");
+    new creature_script<npc_northwatch_caravan>("npc_northwatch_caravan");
     new spell_voodoo();
     new spell_script<spell_summ_garrosh_horde_way>("spell_summ_garrosh_horde_way");
     new aura_script<spell_summ_ji_horde_way>("spell_summ_ji_horde_way");
