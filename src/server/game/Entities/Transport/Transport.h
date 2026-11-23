@@ -108,6 +108,19 @@ class Transport : public GameObject, public TransportBase
 
         TransportTemplate const* GetTransportTemplate() const { return _transportInfo; }
 
+        // Player followers on elevators (type 11). FollowMovementGenerator boards a creature that follows its player
+        // onto his elevator and takes it off when he leaves; Creature::Update drops one that is no longer on the car.
+        static constexpr float FOLLOWER_BOARD_EXTENTS = 1.0f;   // slack around the GeoBox to board
+        static constexpr float FOLLOWER_LEAVE_EXTENTS = 2.0f;   // ... and to stay aboard (wider: no flapping at the edge)
+        // The GeoBox test of WorldObject::AddToTransportIfNeeded: no GeoBox in the DBC counts as inside
+        bool IsInsideBounds(Position const& pos, float extents) const;
+        // Moves the creature onto `to` (nullptr = off its transport): ends its spline in the old frame, changes the
+        // passenger set, and tells clients the new frame with a zero-length spline. False when nothing changed.
+        static bool SwitchFollowerTransport(Creature* follower, Transport* to);
+        // Takes a player's creature off its elevator once it has left the car (+ FOLLOWER_LEAVE_EXTENTS), whatever
+        // moved it there (chase, fear, a spell); called from Creature::Update for creatures with a transport
+        static void DropFollowerIfOffElevator(Creature* creature);
+
         // Phase rule of the `transports` row (TransportTemplate::phases). A moving transport is sent to its whole map
         // outside the grid visibility, so the map asks these when it sends, and the player's visibility update calls
         // UpdatePhaseVisibilityFor to create or destroy the transport at the client when the player's phases change.
