@@ -550,12 +550,18 @@ bool Condition::Meets(ConditionSourceInfo& sourceInfo) const
         }
         case CONDITION_SAI_PHASE:
         {
+            // GetAIName() is the database AIName; a creature with a ScriptName runs C++ AI, so check the real AI
             if (Creature* creature = object->ToCreature())
-                if (creature->GetAIName() == "SmartAI" && !creature->IsPet())
-                    condMeets = CAST_AI(SmartAI, creature->AI())->GetPhase() == ConditionValue1;
-            if (GameObject* go = object->ToGameObject())
-                if (go->GetAIName() == "SmartAI")
-                    condMeets = CAST_AI(SmartAI, go->AI())->GetPhase() == ConditionValue1;
+            {
+                if (!creature->IsPet())
+                    if (SmartAI* ai = dynamic_cast<SmartAI*>(creature->AI()))
+                        condMeets = ai->GetPhase() == ConditionValue1;
+            }
+            else if (GameObject* go = object->ToGameObject())
+            {
+                if (SmartGameObjectAI* ai = dynamic_cast<SmartGameObjectAI*>(go->AI()))
+                    condMeets = ai->GetScript()->GetPhase() == ConditionValue1;
+            }
             break;
         }
         case CONDITION_PLAYER_SPEC:
