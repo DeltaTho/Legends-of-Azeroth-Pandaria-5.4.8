@@ -259,7 +259,7 @@ void WorldSession::HandleQuestgiverAcceptQuestOpcode(WorldPacket& recvData)
             }
         }
 
-        if (_player->CanAddQuest(quest, true))
+        if (_player->CanAddQuest(quest, true, object))   // object: a starter that is its own source item needs no bag space
         {
             _player->AddQuest(quest, object);
 
@@ -306,40 +306,36 @@ void WorldSession::HandleQuestgiverAcceptQuestOpcode(WorldPacket& recvData)
                     Item* item = (Item*)object;   // its script hook already ran in Player::AddQuest (#998)
 
                     // destroy not required for quest finish quest starting item
+                    // No MaxCount gate (LoA had "MaxCount > 0" around these checks): a non-unique starter the quest needs
+                    // was eaten, e.g. Imperfect Draenethyst Fragment 10593 (maxcount 0, stack 20) for its own quest 25771.
                     bool destroyItem = true;
-                    if (item->GetTemplate()->MaxCount > 0)
-                    {
-                        // Prevent destroying the item if it should have been added as a source item for the quest, but failed because of uniqueness
-                        if (quest->GetSrcItemId() == item->GetEntry())
-                            destroyItem = false;
-                        for (uint8 i = 0; i < QUEST_ITEM_DROP_COUNT && destroyItem; ++i)
-                            if (quest->ItemDrop[i] == item->GetEntry())
-                                destroyItem = false;
 
-                        // Prevent destroying the item if it is required for the quest
-                        if (destroyItem)
+                    // The starter is the quest's source item: keep it, AddQuest gave no copy for it (TC #23250)
+                    if (quest->GetSrcItemId() == item->GetEntry())
+                        destroyItem = false;
+                    for (uint8 i = 0; i < QUEST_ITEM_DROP_COUNT && destroyItem; ++i)
+                        if (quest->ItemDrop[i] == item->GetEntry())
+                            destroyItem = false;
+
+                    // Prevent destroying the item if it is required for the quest
+                    if (destroyItem)
+                    {
+                        for (auto&& objective : quest->Objectives)
                         {
-                            for (auto&& objective : quest->Objectives)
+                            if (objective.Type == QUEST_OBJECTIVE_ITEM && objective.ObjectID == item->GetEntry())
                             {
-                                if (objective.Type == QUEST_OBJECTIVE_ITEM && objective.ObjectID == item->GetEntry())
-                                {
-                                    destroyItem = false;
-                                    break;
-                                }
+                                destroyItem = false;
+                                break;
                             }
                         }
                     }
 
+                    // Take one from the stack. DestroyItemCount also runs ItemRemovedQuestCheck, which the old
+                    // SetCount(count - 1) stack hack skipped, so other quests counting this item stay right.
                     if (destroyItem)
                     {
-                        // Dirty hack
-                        if (item->GetCount() > 1)
-                        {
-                            item->SetCount(item->GetCount() - 1);
-                            item->SetState(ITEM_CHANGED, _player);
-                        }
-                        else
-                            _player->DestroyItem(item->GetBagSlot(), item->GetSlot(), true);
+                        uint32 count = 1;
+                        _player->DestroyItemCount(item, count, true);
                     }
                     break;
                 }
@@ -414,7 +410,7 @@ void WorldSession::HandleQuestgiverQueryQuestOpcode(WorldPacket& recvData)
         if (!_player->CanTakeQuest(quest, true))
             return;
 
-        if (quest->IsAutoAccept() && _player->CanAddQuest(quest, true))
+        if (quest->IsAutoAccept() && _player->CanAddQuest(quest, true, object))
             _player->AddQuestAndCheckCompletion(quest, object);
 
         if (!sWorld->getBoolConfig(CONFIG_QUEST_IGNORE_AUTO_COMPLETE) && quest->GetQuestType() == QUEST_TYPE_TURNIN)
