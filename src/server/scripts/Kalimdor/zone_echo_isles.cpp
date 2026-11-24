@@ -29,7 +29,13 @@
 #include "TemporarySummon.h"
 #include "MotionMaster.h"
 #include "DBCStores.h"
+#include "SpellScript.h"
+#include "SpellAuraEffects.h"
+#include "Random.h"
+#include <algorithm>
+#include <deque>
 #include <mutex>
+#include <set>
 #include <unordered_map>
 #include <vector>
 
@@ -623,10 +629,609 @@ private:
     bool _leaving = false;
 };
 
+/*######
+## Zuni in Spitescale Cavern: No More Mercy 24812 and Territorial Fetish 24813, then up the hill for An Ancient Enemy 24814
+## Sourced: warcraft.wiki.gg No More Mercy, Notes: on accepting, Zuni says "Ha! I caught up with ya! Let's stick together in 'ere,
+## okay?" (broadcast 39070) and, killing naga, one of eight lines (broadcast 38255-38262; Wowhead 24813 2011-08-25 [+5] heard five
+## of them); Wowhead 24813 2011-11-06 [+10] "A cool troll pet runs with you"; Wowhead 24814 2011-04-29 [+5] "After completing the
+## quest that pre-empt's this one Zuni exits the cave and runs to your left ... atop the hill to the giant naga queen statue",
+## where the event Zuni 38423 stands. Spell.dbc: 73130 Summon Zuni (Lvl 4) Aura (castable only in Spitescale Cavern 4913, periodic
+## every 10 s, death persistent) triggers 73131 Summon Zuni (Lvl 4): Zuni 38932 10 yd behind the player, SummonProperties 2996
+## (ally guardian, slot 6, personal), plus a script effect on whatever stands within 100 yd.
+## How it is built here: spell_area gives 73130 in area 4913 while either quest is in progress (the area starts at Morakki, who
+## gives both quests outside the cave mouth, so she catches up on accept). 73131 is not cast: its AreaGroup is Durotar 14, and the
+## Echo Isles are zone 6453 in 5.4.8, so it fails with "wrong area". This script summons her as 73131 would and keeps her:
+## - on the aura: she is summoned; every 10 s (the aura's period) a player alive and not on a taxi who has no Zuni gets her again;
+## - her greeting once per quest run (ours): the first time the aura brings her for a player; not again on re-entering the cave,
+##   after a death and release or after a relog, until neither quest is in progress any more (both done or abandoned, wherever the
+##   player is then: the aura's removal and player_echo_isles_zuni_cave_run both check). The memory is the script's, per player
+##   guid: a server restart forgets it, so the first appearance after a restart greets again;
+## - she follows the player and fights what he fights: his attackers and the target he is fighting (his melee victim, or the unit
+##   he has selected while he is in combat with it - casters), within 50 yd (ours, as the Burning Steppes followers); between
+##   fights she goes back to following him. Her kills are his (an owned guardian: Unit::Kill credits the owner). Personal summon
+##   (privateObjectOwner = the player's guid): the naga cannot see her to hit back, and players outside his group do not see her.
+##   His group does (known deviation from the DBC's "visible to summoner only"): Unit::IsAlwaysVisibleFor shows a player's owned
+##   units to his group before the private-object check, and changing that core rule would also hide group vehicles and followers;
+## - a naga she or the player was fighting dies: one roll per dead naga (by guid), a line at 40 %, never twice within 8 s (ours);
+## - the aura goes when neither quest is in progress or the player leaves the area. If one of the two quests is then complete or
+##   handed in, she runs out to the hill at the statue and is gone on arrival (within 10 yd) or after 40 s: after both quests as
+##   the sources say, and (ours) also when the player leaves the cave or abandons with only one done. Otherwise (nothing done:
+##   abandoned, area left; logout; death) she is gone at once (ours).
+## Not used: 73132 Zuni Guardian Aura (a dummy area aura nothing reads).
+######*/
+
+namespace EchoIslesZuniCave
+{
+enum
+{
+    NPC_ZUNI_CAVE                   = 38932,
+    SPELL_SUMMON_ZUNI_LVL_4_AURA    = 73130,
+    SPELL_SUMMON_ZUNI_LVL_4         = 73131,
+    SUMMON_PROPERTIES_ZUNI_LVL_4    = 2996,
+    QUEST_NO_MORE_MERCY             = 24812,
+    QUEST_TERRITORIAL_FETISH        = 24813,
+
+    NPC_SPITESCALE_WAVETHRASHER     = 38300,
+    NPC_SPITESCALE_SIREN            = 38301,
+    NPC_MANIFESTATION_OF_SEA_WITCH  = 38302,
+
+    SAY_CAVE_CAUGHT_UP              = 0,    // 39070
+    SAY_CAVE_NAGA_KILLED            = 1,    // 38255-38262
+
+    DATA_ZUNI_GREET                 = 1,
+    DATA_ZUNI_RUN_OFF               = 2,
+    DATA_ZUNI_LEAVING               = 3,
+
+    POINT_CAVE_RUN_OFF              = 1,
+};
+
+Position const ZuniHillPos = { -748.0f, -5612.5f, 25.3f, 0.0f };   // the event Zuni 38423 (guid 252718) by Vol'jin on the hill
+
+float const ZUNI_CAVE_SUMMON_DIST   = 10.0f;    // SpellRadius 13 of 73131 (DEST_CASTER_BACK)
+float const ZUNI_CAVE_LEASH         = 100.0f;   // SpellRadius 12 of 73131's script effect
+float const ZUNI_CAVE_ASSIST_RANGE  = 50.0f;
+float const ZUNI_CAVE_FOLLOW_ANGLE  = float(M_PI / 2);
+uint32 const ZUNI_CAVE_PERIOD       = 10 * IN_MILLISECONDS;     // 73130 amplitude
+uint32 const ZUNI_QUIP_CHANCE       = 40;
+uint32 const ZUNI_QUIP_COOLDOWN     = 8 * IN_MILLISECONDS;
+uint32 const ZUNI_RUN_OFF_TIMEOUT   = 40 * IN_MILLISECONDS;
+float const ZUNI_HILL_ARRIVAL       = 10.0f;
+size_t const ZUNI_ROLLED_KILLS      = 8;
+
+// Players Zuni has greeted in this quest run (see above)
+std::mutex GreetedLock;
+std::set<ObjectGuid> GreetedPlayers;
+
+bool TakeGreeting(ObjectGuid player)
+{
+    std::lock_guard<std::mutex> guard(GreetedLock);
+    return GreetedPlayers.insert(player).second;
+}
+
+void ForgetGreeting(ObjectGuid player)
+{
+    std::lock_guard<std::mutex> guard(GreetedLock);
+    GreetedPlayers.erase(player);
+}
+
+bool IsSpitescaleNaga(Unit const* unit)
+{
+    if (!unit || unit->GetTypeId() != TYPEID_UNIT)
+        return false;
+
+    switch (unit->GetEntry())
+    {
+        case NPC_SPITESCALE_WAVETHRASHER:
+        case NPC_SPITESCALE_SIREN:
+        case NPC_MANIFESTATION_OF_SEA_WITCH:
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool QuestDone(Player* player, uint32 questId)
+{
+    QuestStatus const status = player->GetQuestStatus(questId);
+    return status == QUEST_STATUS_COMPLETE || status == QUEST_STATUS_REWARDED;
+}
+
+bool QuestInProgress(Player* player, uint32 questId)
+{
+    return player->GetQuestStatus(questId) == QUEST_STATUS_INCOMPLETE;
+}
+
+// Her living copy among the player's minions (not one already running off to the hill); a dying one is reported through hasCorpse
+Creature* FindCaveZuni(Unit* owner, bool* hasCorpse = nullptr)
+{
+    Creature* living = nullptr;
+    std::list<Creature*> minions;
+    owner->GetAllMinionsByEntry(minions, NPC_ZUNI_CAVE);
+    for (Creature* minion : minions)
+    {
+        if (minion->IsDestroyedObject() || !minion->IsInWorld())
+            continue;
+        if (minion->IsAIEnabled && minion->AI()->GetData(DATA_ZUNI_LEAVING))
+            continue;
+        if (minion->IsAlive())
+            living = minion;
+        else if (hasCorpse)
+            *hasCorpse = true;
+    }
+    return living;
+}
+
+// As Spell::EffectSummonType -> SummonGuardian would for 73131: an ally guardian at the player's level with his faction, owned by
+// him, personal (SummonProperties 2996 flag 0x10), 10 yd behind him
+Creature* SummonCaveZuni(Player* player, bool greet)
+{
+    SummonPropertiesEntry const* properties = sSummonPropertiesStore.LookupEntry(SUMMON_PROPERTIES_ZUNI_LVL_4);
+    if (!properties || !player->IsInWorld())
+        return nullptr;
+
+    Position pos = player->GetNearPosition(ZUNI_CAVE_SUMMON_DIST, float(M_PI));
+    pos.SetOrientation(player->GetOrientation());
+    TempSummon* summon = player->GetMap()->SummonCreature(NPC_ZUNI_CAVE, pos, properties, 0ms, player, SPELL_SUMMON_ZUNI_LVL_4, 0, player->GetGUID());
+    if (!summon)
+        return nullptr;
+
+    if (summon->HasUnitTypeMask(UNIT_MASK_GUARDIAN))
+        static_cast<Guardian*>(summon)->InitStatsForLevel(player->GetLevel());
+    summon->SetFaction(player->GetFaction());
+    if (summon->HasUnitTypeMask(UNIT_MASK_MINION))
+        static_cast<Minion*>(summon)->SetFollowAngle(ZUNI_CAVE_FOLLOW_ANGLE);
+
+    if (greet && summon->IsAIEnabled)
+        summon->AI()->SetData(DATA_ZUNI_GREET, 1);
+
+    TC_LOG_DEBUG("scripts", "Echo Isles: Zuni 38932 summoned for %s (greeting %u)", player->GetName().c_str(), uint32(greet));
+    return summon;
+}
+}
+
+// 73130 - Summon Zuni (Lvl 4) Aura, given by spell_area in Spitescale Cavern while No More Mercy or Territorial Fetish is in progress
+class spell_echo_isles_zuni_cave_aura : public AuraScript
+{
+    PrepareAuraScript(spell_echo_isles_zuni_cave_aura);
+
+    void AfterApply(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
+    {
+        using namespace EchoIslesZuniCave;
+
+        Player* player = GetTarget()->ToPlayer();
+        if (!player || !player->IsInWorld() || !player->IsAlive() || player->IsInFlight() || FindCaveZuni(player))
+            return;
+
+        SummonCaveZuni(player, TakeGreeting(player->GetGUID()));
+    }
+
+    // Instead of triggering 73131 (refused here, see above): bring her back when she is missing
+    void OnPeriodic(AuraEffect const* /*aurEff*/)
+    {
+        using namespace EchoIslesZuniCave;
+
+        PreventDefaultAction();
+
+        Player* player = GetTarget()->ToPlayer();
+        if (!player || !player->IsInWorld() || !player->IsAlive() || player->IsInFlight())
+            return;
+
+        bool hasCorpse = false;
+        if (FindCaveZuni(player, &hasCorpse) || hasCorpse)
+            return;
+
+        SummonCaveZuni(player, false);
+    }
+
+    void AfterRemove(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
+    {
+        using namespace EchoIslesZuniCave;
+
+        Player* player = GetTarget()->ToPlayer();
+        if (!player)
+            return;
+
+        // The quest run is over (both done, or abandoned): the next run greets again
+        if (!QuestInProgress(player, QUEST_NO_MORE_MERCY) && !QuestInProgress(player, QUEST_TERRITORIAL_FETISH))
+            ForgetGreeting(player->GetGUID());
+
+        // Up the hill once something is done; gone at once otherwise
+        bool const runOff = player->IsInWorld() && player->IsAlive()
+            && (QuestDone(player, QUEST_NO_MORE_MERCY) || QuestDone(player, QUEST_TERRITORIAL_FETISH));
+        if (runOff)
+            if (Creature* zuni = FindCaveZuni(player))
+                if (zuni->IsAIEnabled)
+                {
+                    zuni->AI()->SetData(DATA_ZUNI_RUN_OFF, 1);
+                    return;
+                }
+
+        player->RemoveAllMinionsByEntry(NPC_ZUNI_CAVE);
+    }
+
+    void Register() override
+    {
+        AfterEffectApply += AuraEffectApplyFn(spell_echo_isles_zuni_cave_aura::AfterApply, EFFECT_0, SPELL_AURA_PERIODIC_TRIGGER_SPELL, AURA_EFFECT_HANDLE_REAL);
+        OnEffectPeriodic += AuraEffectPeriodicFn(spell_echo_isles_zuni_cave_aura::OnPeriodic, EFFECT_0, SPELL_AURA_PERIODIC_TRIGGER_SPELL);
+        AfterEffectRemove += AuraEffectRemoveFn(spell_echo_isles_zuni_cave_aura::AfterRemove, EFFECT_0, SPELL_AURA_PERIODIC_TRIGGER_SPELL, AURA_EFFECT_HANDLE_REAL);
+    }
+};
+
+// 38932 - Zuni (Lvl 4), the player's companion in Spitescale Cavern (see above)
+struct npc_echo_isles_zuni_cave : public ScriptedAI
+{
+    npc_echo_isles_zuni_cave(Creature* creature) : ScriptedAI(creature) { }
+
+    void IsSummonedBy(Unit* summoner) override
+    {
+        if (summoner->GetTypeId() != TYPEID_PLAYER)
+        {
+            me->DespawnOrUnsummon();
+            return;
+        }
+
+        _ownerGUID = summoner->GetGUID();
+        // A guardian starts aggressive and would pull every naga she passes: defensive, no line-of-sight aggro
+        me->SetReactState(REACT_DEFENSIVE);
+        // Left out of every player's sight her grid would stop updating: active, Check() brings her along
+        me->setActive(true, ActiveFlags::Script);
+
+        _events.Reset();
+        _events.ScheduleEvent(EVENT_ZUNI_FOLLOW, 500ms);
+        _events.ScheduleEvent(EVENT_ZUNI_ASSIST, 1s);
+        _events.ScheduleEvent(EVENT_ZUNI_CHECK, 1s);
+    }
+
+    // Not the core's follow-on-spawn: EVENT_ZUNI_FOLLOW sets it once level and faction are in place
+    void JustAppeared() override { }
+    void MoveInLineOfSight(Unit* /*who*/) override { }
+
+    void SetData(uint32 id, uint32 /*value*/) override
+    {
+        using namespace EchoIslesZuniCave;
+
+        switch (id)
+        {
+            case DATA_ZUNI_GREET:
+                if (Player* owner = GetOwnerPlayer())
+                    Talk(SAY_CAVE_CAUGHT_UP, owner);
+                _quipCooldown = ZUNI_QUIP_COOLDOWN;
+                break;
+            case DATA_ZUNI_RUN_OFF:
+                RunOff();
+                break;
+            default:
+                break;
+        }
+    }
+
+    uint32 GetData(uint32 id) const override
+    {
+        return id == EchoIslesZuniCave::DATA_ZUNI_LEAVING && _leaving ? 1 : 0;
+    }
+
+    void AttackStart(Unit* who) override
+    {
+        if (!who || _leaving)
+            return;
+
+        ScriptedAI::AttackStart(who);
+    }
+
+    void KilledUnit(Unit* victim) override
+    {
+        if (EchoIslesZuniCave::IsSpitescaleNaga(victim))
+            TryQuip(victim->GetGUID());
+    }
+
+    void MovementInform(uint32 type, uint32 id) override
+    {
+        if (_leaving && type == POINT_MOTION_TYPE && id == EchoIslesZuniCave::POINT_CAVE_RUN_OFF)
+            me->DespawnOrUnsummon();
+    }
+
+    void EnterEvadeMode(EvadeReason why) override
+    {
+        if (_leaving)
+            return;
+
+        ScriptedAI::EnterEvadeMode(why);
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        using namespace EchoIslesZuniCave;
+
+        if (_ownerGUID.IsEmpty())
+            return;
+
+        if (_quipCooldown)
+            _quipCooldown = _quipCooldown > diff ? _quipCooldown - diff : 0;
+
+        _events.Update(diff);
+        while (uint32 eventId = _events.ExecuteEvent())
+        {
+            switch (eventId)
+            {
+                case EVENT_ZUNI_FOLLOW:
+                    if (Player* owner = GetOwnerPlayer())
+                        if (!me->IsInCombat() && !me->GetVictim())
+                        {
+                            me->GetMotionMaster()->Clear(false);
+                            me->GetMotionMaster()->MoveFollow(owner, PET_FOLLOW_DIST, me->GetFollowAngle());
+                        }
+                    break;
+                case EVENT_ZUNI_ASSIST:
+                    Assist();
+                    _events.ScheduleEvent(EVENT_ZUNI_ASSIST, 1s);
+                    break;
+                case EVENT_ZUNI_CHECK:
+                    if (!Check())
+                        return;
+                    _events.ScheduleEvent(EVENT_ZUNI_CHECK, 1s);
+                    break;
+                case EVENT_ZUNI_RUN_OFF_TIMEOUT:
+                    me->DespawnOrUnsummon();
+                    return;
+                default:
+                    break;
+            }
+        }
+
+        if (_leaving)
+            return;
+
+        // Not UpdateVictim: for a guardian Creature::SelectVictim also takes the attackers of everything the owner controls
+        if (!me->IsInCombat() && !me->GetVictim())
+        {
+            // A fight ended by the kill leaves no evade behind (the dead victim's CombatStop ends her combat): back to following
+            if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() != FOLLOW_MOTION_TYPE)
+                if (Player* owner = GetOwnerPlayer())
+                {
+                    me->GetMotionMaster()->Clear(false);
+                    me->GetMotionMaster()->MoveFollow(owner, PET_FOLLOW_DIST, me->GetFollowAngle());
+                }
+            return;
+        }
+
+        Unit* target = SelectAllowedVictim();
+        if (!target)
+        {
+            EnterEvadeMode(EVADE_REASON_NO_HOSTILES);
+            return;
+        }
+
+        if (target != me->GetVictim())
+            AttackStart(target);
+
+        DoMeleeAttackIfReady();
+    }
+
+private:
+    enum
+    {
+        EVENT_ZUNI_FOLLOW = 1,
+        EVENT_ZUNI_ASSIST,
+        EVENT_ZUNI_CHECK,
+        EVENT_ZUNI_RUN_OFF_TIMEOUT,
+    };
+
+    Player* GetOwnerPlayer() const { return ObjectAccessor::GetPlayer(*me, _ownerGUID); }
+
+    bool CanFight(Unit* target) const
+    {
+        return target && target->IsAlive() && me->IsWithinDistInMap(target, EchoIslesZuniCave::ZUNI_CAVE_ASSIST_RANGE) && me->IsValidAttackTarget(target);
+    }
+
+    // The target the player is fighting: his melee victim, else (spells set no victim) the unit he has selected, while he is in
+    // combat with it
+    Unit* GetOwnerTarget(Player* owner) const
+    {
+        Unit* victim = owner->GetVictim();
+        if (victim && owner->IsInCombatWith(victim))
+            return victim;
+
+        Unit* selected = owner->GetSelectedUnit();
+        if (selected && selected != me && owner->IsInCombatWith(selected))
+            return selected;
+        return nullptr;
+    }
+
+    // Her victim until it dies; a new one among the player's attackers, the player's own target, then her own attackers
+    Unit* SelectAllowedVictim() const
+    {
+        Unit* victim = me->GetVictim();
+        if (CanFight(victim))
+            return victim;
+
+        if (Player* owner = GetOwnerPlayer())
+        {
+            for (Unit* attacker : owner->getAttackers())
+                if (CanFight(attacker))
+                    return attacker;
+
+            Unit* ownerTarget = GetOwnerTarget(owner);
+            if (CanFight(ownerTarget))
+                return ownerTarget;
+        }
+
+        for (Unit* attacker : me->getAttackers())
+            if (CanFight(attacker))
+                return attacker;
+
+        return nullptr;
+    }
+
+    void Assist()
+    {
+        using namespace EchoIslesZuniCave;
+
+        Player* owner = GetOwnerPlayer();
+        if (!owner || _leaving)
+            return;
+
+        // A naga the player was fighting has died: maybe a line
+        if (!_ownerTargetGUID.IsEmpty())
+        {
+            Creature* last = ObjectAccessor::GetCreature(*me, _ownerTargetGUID);
+            if (!last || !last->IsAlive())
+            {
+                ObjectGuid const dead = _ownerTargetGUID;
+                _ownerTargetGUID.Clear();
+                if (last)
+                    TryQuip(dead);
+            }
+        }
+
+        Unit* ownerTarget = owner->IsAlive() ? GetOwnerTarget(owner) : nullptr;
+        if (IsSpitescaleNaga(ownerTarget))
+            _ownerTargetGUID = ownerTarget->GetGUID();
+
+        if (!owner->IsAlive() || me->GetVictim())
+            return;
+
+        if (Unit* target = SelectAllowedVictim())
+            AttackStart(target);
+    }
+
+    // One roll per dead naga: her killing blow (KilledUnit) and the player's target found dead (Assist) can name the same one
+    void TryQuip(ObjectGuid victim)
+    {
+        using namespace EchoIslesZuniCave;
+
+        if (std::find(_rolledKills.begin(), _rolledKills.end(), victim) != _rolledKills.end())
+            return;
+        _rolledKills.push_back(victim);
+        if (_rolledKills.size() > ZUNI_ROLLED_KILLS)
+            _rolledKills.pop_front();
+
+        if (_quipCooldown || _leaving || !roll_chance_i(ZUNI_QUIP_CHANCE))
+            return;
+
+        // Personal (creature_text TextRange 5): only her player sees her
+        if (Player* owner = GetOwnerPlayer())
+        {
+            Talk(SAY_CAVE_NAGA_KILLED, owner);
+            _quipCooldown = ZUNI_QUIP_COOLDOWN;
+        }
+    }
+
+    bool Check()
+    {
+        using namespace EchoIslesZuniCave;
+
+        Player* owner = GetOwnerPlayer();
+        if (!owner || !owner->IsInWorld() || owner->GetMapId() != me->GetMapId() || !owner->IsAlive() || owner->IsInFlight())
+        {
+            TC_LOG_DEBUG("scripts", "npc_echo_isles_zuni_cave: owner gone, dead or on a taxi, Zuni leaves");
+            Leave();
+            return false;
+        }
+
+        if (_leaving)
+        {
+            // On the hill: gone before she stands beside the event Zuni, even if her path ends short of the spot
+            if (me->GetExactDist2d(ZuniHillPos.GetPositionX(), ZuniHillPos.GetPositionY()) <= ZUNI_HILL_ARRIVAL)
+            {
+                Leave();
+                return false;
+            }
+            return true;
+        }
+
+        if (!owner->HasAura(SPELL_SUMMON_ZUNI_LVL_4_AURA))
+        {
+            TC_LOG_DEBUG("scripts", "npc_echo_isles_zuni_cave: %s lost aura 73130, Zuni leaves", owner->GetName().c_str());
+            Leave();
+            return false;
+        }
+
+        if (!me->IsWithinDistInMap(owner, ZUNI_CAVE_LEASH) && !owner->GetVehicle())
+        {
+            if (me->IsInCombat() || me->GetVictim())
+                EnterEvadeMode(EVADE_REASON_OTHER);
+
+            Position pos = owner->GetNearPosition(2.0f, me->GetFollowAngle());
+            me->NearTeleportTo(pos.GetPositionX(), pos.GetPositionY(), pos.GetPositionZ(), owner->GetOrientation());
+            me->GetMotionMaster()->Clear(false);
+            me->GetMotionMaster()->MoveFollow(owner, PET_FOLLOW_DIST, me->GetFollowAngle());
+        }
+        return true;
+    }
+
+    void Leave()
+    {
+        _events.Reset();
+        _ownerGUID.Clear();
+        me->DespawnOrUnsummon();
+    }
+
+    // Both quests done: out of the cave and up the hill to the statue, where the event Zuni stands
+    void RunOff()
+    {
+        using namespace EchoIslesZuniCave;
+
+        if (_leaving)
+            return;
+
+        _leaving = true;
+        TC_LOG_DEBUG("scripts", "npc_echo_isles_zuni_cave: both cave quests complete, Zuni runs up the hill");
+        me->AttackStop();
+        me->CombatStop(true);
+        me->SetReactState(REACT_PASSIVE);
+        me->SetWalk(false);
+        me->GetMotionMaster()->Clear(false);
+        me->GetMotionMaster()->MovePoint(POINT_CAVE_RUN_OFF, ZuniHillPos);
+        _events.CancelEvent(EVENT_ZUNI_FOLLOW);
+        _events.CancelEvent(EVENT_ZUNI_ASSIST);
+        _events.ScheduleEvent(EVENT_ZUNI_RUN_OFF_TIMEOUT, Milliseconds(ZUNI_RUN_OFF_TIMEOUT));
+    }
+
+    ObjectGuid _ownerGUID;
+    ObjectGuid _ownerTargetGUID;
+    std::deque<ObjectGuid> _rolledKills;
+    EventMap _events;
+    uint32 _quipCooldown = 0;
+    bool _leaving = false;
+};
+
+// Forgets the cave greeting when the cave quests leave the log (abandoned or handed in) while the player is away from the cave,
+// where the aura's removal does not run (see spell_echo_isles_zuni_cave_aura)
+class player_echo_isles_zuni_cave_run : public PlayerScript
+{
+public:
+    player_echo_isles_zuni_cave_run() : PlayerScript("player_echo_isles_zuni_cave_run") { }
+
+    void OnQuestAbandoned(Player* player, Quest const* quest) override
+    {
+        Check(player, quest);
+    }
+
+    void OnQuestRewarded(Player* player, Quest const* quest) override
+    {
+        Check(player, quest);
+    }
+
+private:
+    static void Check(Player* player, Quest const* quest)
+    {
+        using namespace EchoIslesZuniCave;
+
+        if (!quest || (quest->GetQuestId() != QUEST_NO_MORE_MERCY && quest->GetQuestId() != QUEST_TERRITORIAL_FETISH))
+            return;
+
+        if (!QuestInProgress(player, QUEST_NO_MORE_MERCY) && !QuestInProgress(player, QUEST_TERRITORIAL_FETISH))
+            ForgetGreeting(player->GetGUID());
+    }
+};
+
 void AddSC_echo_isles()
 {
     new creature_script<npc_echo_isles_tiki_target>("npc_echo_isles_tiki_target");
     new quest_echo_isles_trainer_praise();
     new at_echo_isles_zuni_bridge();
     new creature_script<npc_echo_isles_zuni_bridge>("npc_echo_isles_zuni_bridge");
+    new aura_script<spell_echo_isles_zuni_cave_aura>("spell_echo_isles_zuni_cave_aura");
+    new creature_script<npc_echo_isles_zuni_cave>("npc_echo_isles_zuni_cave");
+    new player_echo_isles_zuni_cave_run();
 }
