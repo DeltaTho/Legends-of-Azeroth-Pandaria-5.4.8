@@ -18599,8 +18599,25 @@ void Unit::_ExitVehicle(Position const* exitPosition)
     init.SetTransportExit();
     init.Launch();
 
+    // Give the pet back a moment after the exit, not in the same update. The client fires UNIT_PET when the owner's
+    // summon field changes, and the 5.4.8 PetFrame (FrameXML PetFrame_OnEvent) then takes "player" as its unit when
+    // UnitInVehicle("player") and UnitHasVehiclePlayerFrameUI("player") are still true. On seats without the art-swap
+    // flag (0x20000000 - e.g. 7347 Swiftclaw, 7577 Bloodtalon Thrasher) the PlayerFrame never swaps, so nothing swaps
+    // the PetFrame back on the exit: it kept showing (and targeting) the hunter until a relog. Once the client has
+    // left the seat, UNIT_PET sets the PetFrame back to "pet".
     if (player)
-        player->ResummonPetTemporaryUnSummonedIfAny();
+    {
+        player->m_Events.Schedule(1000, [player]()
+        {
+            // a pet called in the meantime (Call Pet, a bot's "call pet") replaces the one put away for the ride:
+            // forget that one, or a later mount/dismount or teleport would bring it back instead
+            if (player->GetPetGUID())
+                player->SetTemporaryUnsummonedPetNumber(0);
+            // a pending teleport resummons on its ack (HandleMoveTeleportAck / HandleMoveWorldportAck)
+            else if (player->IsInWorld() && !player->GetVehicle() && !player->IsBeingTeleported())
+                player->ResummonPetTemporaryUnSummonedIfAny();
+        });
+    }
 
     if (vehicle->GetBase()->HasUnitTypeMask(UNIT_MASK_MINION) && vehicle->GetBase()->GetTypeId() == TYPEID_UNIT)
         if (((Minion*) vehicle->GetBase())->GetOwner() == this)

@@ -5773,20 +5773,53 @@ void Spell::EffectResurrectPet(SpellEffIndex /*effIndex*/)
     if (effectHandleMode != SPELL_EFFECT_HANDLE_HIT)
         return;
 
+    if (damage < 0)
+        return;
+
     Player* player = m_caster->ToPlayer();
     if (!player)
         return;
+
+    // The dead pet's object can be gone while it is still the current pet (temporarily unsummoned for a
+    // vehicle ride or a teleport while dead): load it back from the DB, as TrinityCore and TCPP do. A pet saved with
+    // 0 health loads as a corpse (Pet::LoadPetFromDB) and is revived below. Without this the cast did nothing.
+    bool hadPet = true;
+    if (!player->GetPet())
+    {
+        // not while seated: the pet was put away for the ride and comes back after the exit (Unit::_ExitVehicle);
+        // loading it here would also fire UNIT_PET while the client is in the seat (PetFrame stuck on the player)
+        if (player->GetVehicle())
+            return;
+
+        uint32 petNumber = player->GetCurrentPetId();
+        if (!petNumber)
+            return;
+
+        Pet* stored = new Pet(player);
+        if (!stored->LoadPetFromDB(PET_LOAD_BY_ID, petNumber))
+        {
+            delete stored;
+            return;
+        }
+
+        if (player->GetTemporaryUnsummonedPetNumber() == petNumber)
+            player->SetTemporaryUnsummonedPetNumber(0);
+        hadPet = false;
+    }
 
     Pet* pet = player->GetPet();
     if (!pet || pet->IsAlive())
         return;
 
-    if (damage < 0)
-        return;
-
-    float x, y, z;
-    player->GetPosition(x, y, z);
-    player->GetMap()->CreatureRelocation(pet, x, y, z, player->GetOrientation());
+    // Move the corpse to the hunter with a teleport packet; Map::CreatureRelocation alone moved it only on the server,
+    // so the client kept drawing the pet where it died (TrinityCore / TCPP EffectResurrectPet).
+    if (hadPet)
+    {
+        float x, y, z;
+        player->GetClosePoint(x, y, z, pet->GetCombatReach(), PET_FOLLOW_DIST, pet->GetFollowAngle());
+        pet->NearTeleportTo(x, y, z, player->GetOrientation());
+        pet->Relocate(x, y, z, player->GetOrientation()); // so SaveStayPosition() below gets the new spot
+    }
 
     pet->SetUInt32Value(OBJECT_FIELD_DYNAMIC_FLAGS, UNIT_DYNFLAG_NONE);
     pet->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_SKINNABLE);
@@ -5794,8 +5827,19 @@ void Spell::EffectResurrectPet(SpellEffIndex /*effIndex*/)
     pet->ClearUnitState(uint32(UNIT_STATE_ALL_STATE & ~UNIT_STATE_IGNORE_PATHFINDING));
     pet->SetHealth(pet->CountPctFromMaxHealth(damage));
 
-    //pet->AIM_Initialize();
-    //player->PetSpellInitialize();
+    // Reset the command state the pet died with, so the AI takes over cleanly (TrinityCore / TCPP)
+    if (CharmInfo* ci = pet->GetCharmInfo())
+    {
+        // a pet set to stay stays where it was revived instead of running back to the old spot
+        ci->SaveStayPosition();
+        ci->SetIsAtStay(ci->HasCommandState(COMMAND_STAY));
+
+        ci->SetIsFollowing(false);
+        ci->SetIsCommandAttack(false);
+        ci->SetIsCommandFollow(false);
+        ci->SetIsReturning(false);
+    }
+
     pet->SavePetToDB();
 }
 
