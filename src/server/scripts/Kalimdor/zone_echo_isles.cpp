@@ -22,6 +22,8 @@
 #include "ScriptMgr.h"
 #include "ScriptedCreature.h"
 #include "Player.h"
+#include "QuestDef.h"
+#include "CreatureTextMgr.h"
 #include "CombatManager.h"
 #include "Timer.h"
 #include <mutex>
@@ -284,7 +286,84 @@ private:
     uint32 _setupTimer = 0;
 };
 
+/*######
+## quest_echo_isles_trainer_praise
+## The Basics: Hitting Things and Proving Pit of all nine troll-area class sets. When one of them becomes complete, the class
+## trainer who gave it speaks to the player: "Not bad, $n. Not bad." for The Basics (broadcast 37928; warcraft.wiki.gg The Basics:
+## Hitting Things (hunter), Notes: "After destroying the tiki targets: Ortezza says: Not bad, <name>. Not bad.") and "Well done,
+## $n!" for Proving Pit (broadcast 37898; both TDBs give it to the same nine trainers as group 1, no source says when: ours).
+## The lines are personal (creature_text TextRange 5, ours): the trainer is up to ~200 yd from the far end of the training
+## grounds, beyond say range, and other players need not read a stranger's name. Only the quest's own trainer, the nearest
+## within 250 yd, speaks; no trainer in range, no line.
+######*/
+
+namespace EchoIslesTrainers
+{
+enum
+{
+    SAY_TRAINER_BASICS_COMPLETE     = 0,
+    SAY_TRAINER_PROVING_PIT_DONE    = 1,
+};
+
+struct TrainerLine
+{
+    uint32 Quest;
+    uint32 Trainer;
+    uint8 Group;
+};
+
+TrainerLine const TrainerLines[] =
+{
+    { 24639, 38037, SAY_TRAINER_BASICS_COMPLETE },  // warrior - Nortet
+    { 24751, 38246, SAY_TRAINER_BASICS_COMPLETE },  // mage - Soratha
+    { 24759, 38242, SAY_TRAINER_BASICS_COMPLETE },  // shaman - Nekali
+    { 24765, 38243, SAY_TRAINER_BASICS_COMPLETE },  // druid - Zen'tabra
+    { 24771, 38244, SAY_TRAINER_BASICS_COMPLETE },  // rogue - Legati
+    { 24777, 38247, SAY_TRAINER_BASICS_COMPLETE },  // hunter - Ortezza
+    { 24783, 38245, SAY_TRAINER_BASICS_COMPLETE },  // priest - Tunari
+    { 26273, 42618, SAY_TRAINER_BASICS_COMPLETE },  // warlock - Voldreka
+    { 31158, 63310, SAY_TRAINER_BASICS_COMPLETE },  // monk - Zabrax
+    { 24642, 38037, SAY_TRAINER_PROVING_PIT_DONE }, // warrior
+    { 24754, 38246, SAY_TRAINER_PROVING_PIT_DONE }, // mage
+    { 24762, 38242, SAY_TRAINER_PROVING_PIT_DONE }, // shaman
+    { 24768, 38243, SAY_TRAINER_PROVING_PIT_DONE }, // druid
+    { 24774, 38244, SAY_TRAINER_PROVING_PIT_DONE }, // rogue
+    { 24780, 38247, SAY_TRAINER_PROVING_PIT_DONE }, // hunter
+    { 24786, 38245, SAY_TRAINER_PROVING_PIT_DONE }, // priest
+    { 26276, 42618, SAY_TRAINER_PROVING_PIT_DONE }, // warlock
+    { 31161, 63310, SAY_TRAINER_PROVING_PIT_DONE }, // monk
+};
+
+float const TRAINER_SEARCH_RANGE = 250.0f;
+}
+
+class quest_echo_isles_trainer_praise : public QuestScript
+{
+public:
+    quest_echo_isles_trainer_praise() : QuestScript("quest_echo_isles_trainer_praise") { }
+
+    void OnQuestStatusChange(Player* player, Quest const* quest, QuestStatus oldStatus, QuestStatus newStatus) override
+    {
+        using namespace EchoIslesTrainers;
+
+        // Player::CompleteQuest: the last objective met. Not on login (statuses are loaded, not changed) or turn-in.
+        if (oldStatus != QUEST_STATUS_INCOMPLETE || newStatus != QUEST_STATUS_COMPLETE || !player->IsInWorld())
+            return;
+
+        for (TrainerLine const& line : TrainerLines)
+        {
+            if (line.Quest != quest->GetQuestId())
+                continue;
+
+            if (Creature* trainer = player->FindNearestCreature(line.Trainer, TRAINER_SEARCH_RANGE))
+                sCreatureTextMgr->SendChat(trainer, line.Group, player);
+            return;
+        }
+    }
+};
+
 void AddSC_echo_isles()
 {
     new creature_script<npc_echo_isles_tiki_target>("npc_echo_isles_tiki_target");
+    new quest_echo_isles_trainer_praise();
 }
