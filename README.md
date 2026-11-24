@@ -34,6 +34,7 @@ passes will be required to test and validate the alliance's perspective.
 | Burning Steppes | On [`pr/burning-steppes`](../../tree/pr/burning-steppes), not merged yet |
 | Swamp of Sorrows | On [`pr/swamp-of-sorrows`](../../tree/pr/swamp-of-sorrows), not merged yet |
 | Blasted Lands | On [`pr/blasted-lands`](../../tree/pr/blasted-lands), not merged yet |
+| Durotar, with the Valley of Trials and the Echo Isles (orc and troll starting zones) | On [`pr/durotar`](../../tree/pr/durotar), not merged yet |
 
 ## Branches
 
@@ -47,5 +48,8 @@ passes will be required to test and validate the alliance's perspective.
 - `pr/burning-steppes`: the Burning Steppes set, on top of `pr/searing-gorge`.
 - `pr/swamp-of-sorrows`: the Swamp of Sorrows set, on top of `pr/burning-steppes`.
 - `pr/blasted-lands`: the Blasted Lands set, on top of `pr/swamp-of-sorrows`.
+- `pr/durotar`: the Durotar set, with the Valley of Trials and the Echo Isles, on top of
+  `pr/blasted-lands`. It also carries the breadcrumb-quest core support from `fixes`, which its
+  quests need.
 
 Branches of regions that have been merged are removed.
