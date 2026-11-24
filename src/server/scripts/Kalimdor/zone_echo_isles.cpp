@@ -26,6 +26,9 @@
 #include "CreatureTextMgr.h"
 #include "CombatManager.h"
 #include "Timer.h"
+#include "TemporarySummon.h"
+#include "MotionMaster.h"
+#include "DBCStores.h"
 #include <mutex>
 #include <unordered_map>
 #include <vector>
@@ -362,8 +365,268 @@ public:
     }
 };
 
+/*######
+## Zuni at the bridge: A Troll's Truest Companion 24622 -> Saving the Young 24623
+## Sourced: warcraft.wiki.gg A Troll's Truest Companion, Notes: "When approaching the bridge to the island, Zuni appears" and says
+## "Wait up, mon!" / "You finished with ya trainin' too? Glad you make it through, mon!" / "I know dis is prolly busy work, but I
+## don't mind. Dese baby raptors are cute lil devils." (broadcast 39066-39068); Saving the Young, Notes: "On accepting, Zuni runs
+## off to complete the quest too: Try not ta make me look too bad, eh?" (broadcast 39069). Spell.dbc 73302 Summon Zuni (Lvl 2):
+## Zuni 38930, SummonProperties 2995 (wild, summon slot 6, personal: only her player sees her), 4 yd behind the caster
+## (DEST_CASTER -> DEST_DEST_BACK, radius 4). Nothing in either TDB casts 73302 or its forcecast 73303.
+## Ours: the trigger is AreaTrigger.dbc 5677, the box over the first bridge from the training grounds towards Kijara's island
+## (Bloodtalon Shore 4863; boxes 5777 and 5778 follow it over the water), entered while 24622 is in the log and 24623 not yet
+## taken; she follows the player and says the three lines 1, 5 and 11 s after she appears; she stays with him until he takes 24623,
+## says her line and runs off north-west towards the hatchlings' island, gone 10 s later. She leaves without a word when he
+## abandons 24622 without taking 24623, dies, logs out, leaves the map, goes more than 100 yd from her, walks into Darkspear Hold
+## (area 4866, where the Hold's own Zuni 38931 stands once 24623 is taken) or after 10 minutes.
+## The summon is done here rather than by casting 73302: the spell's -1 duration makes a 49-day timed summon, and the script
+## needs her as its own creature anyway.
+######*/
+
+namespace EchoIslesZuniBridge
+{
+enum
+{
+    NPC_ZUNI_BRIDGE                 = 38930,
+    QUEST_A_TROLLS_TRUEST_COMPANION = 24622,
+    QUEST_SAVING_THE_YOUNG          = 24623,
+    SPELL_SUMMON_ZUNI_LVL_2         = 73302,
+    SUMMON_PROPERTIES_ZUNI_LVL_2    = 2995,
+
+    SAY_BRIDGE_WAIT_UP              = 0,    // 39066
+    SAY_BRIDGE_TRAINING             = 1,    // 39067
+    SAY_BRIDGE_RAPTORS              = 2,    // 39068
+    SAY_BRIDGE_RUN_OFF              = 3,    // 39069
+
+    POINT_BRIDGE_RUN_OFF            = 1,
+
+    AREA_DARKSPEAR_HOLD             = 4866,
+};
+
+Position const HatchlingIslePos = { -1365.0f, -5162.0f, 5.0f, 0.0f };   // centre of the 42 Lost Bloodtalon Hatchling spawns (4864)
+
+float const ZUNI_BRIDGE_SUMMON_DIST  = 4.0f;    // SpellRadius 26 of 73302
+float const ZUNI_BRIDGE_LEASH        = 100.0f;
+float const ZUNI_BRIDGE_RUN_OFF_DIST = 30.0f;
+uint32 const ZUNI_BRIDGE_LIFETIME    = 10 * MINUTE * IN_MILLISECONDS;
+uint32 const ZUNI_BRIDGE_GONE_DELAY  = 10 * IN_MILLISECONDS;
+
+bool HasLivingBridgeZuni(Player* player)
+{
+    std::list<TempSummon*> summons;
+    player->GetSummons(summons, NPC_ZUNI_BRIDGE);
+    for (TempSummon* summon : summons)
+        if (summon->IsInWorld() && !summon->IsDestroyedObject() && summon->IsAlive())
+            return true;
+    return false;
+}
+}
+
+class at_echo_isles_zuni_bridge : public AreaTriggerScript
+{
+public:
+    at_echo_isles_zuni_bridge() : AreaTriggerScript("at_echo_isles_zuni_bridge") { }
+
+    bool OnTrigger(Player* player, AreaTriggerEntry const* /*trigger*/) override
+    {
+        using namespace EchoIslesZuniBridge;
+
+        QuestStatus const companion = player->GetQuestStatus(QUEST_A_TROLLS_TRUEST_COMPANION);
+        if (companion != QUEST_STATUS_COMPLETE && companion != QUEST_STATUS_INCOMPLETE)
+            return false;
+        if (player->GetQuestStatus(QUEST_SAVING_THE_YOUNG) != QUEST_STATUS_NONE)
+            return false;
+        if (!player->IsAlive() || player->GetVehicle() || HasLivingBridgeZuni(player))
+            return false;
+
+        SummonPropertiesEntry const* properties = sSummonPropertiesStore.LookupEntry(SUMMON_PROPERTIES_ZUNI_LVL_2);
+        Position pos = player->GetNearPosition(ZUNI_BRIDGE_SUMMON_DIST, float(M_PI));
+        pos.SetOrientation(player->GetOrientation());
+        if (player->GetMap()->SummonCreature(NPC_ZUNI_BRIDGE, pos, properties, 0ms, player, SPELL_SUMMON_ZUNI_LVL_2, 0, player->GetGUID()))
+            TC_LOG_DEBUG("scripts", "at_echo_isles_zuni_bridge: Zuni 38930 summoned for %s", player->GetName().c_str());
+        return false;
+    }
+};
+
+// 38930 - Zuni (Lvl 2). Template: faction 126, IMMUNE_TO_PC | IMMUNE_TO_NPC; she never fights.
+struct npc_echo_isles_zuni_bridge : public ScriptedAI
+{
+    npc_echo_isles_zuni_bridge(Creature* creature) : ScriptedAI(creature) { }
+
+    void IsSummonedBy(Unit* summoner) override
+    {
+        using namespace EchoIslesZuniBridge;
+
+        if (summoner->GetTypeId() != TYPEID_PLAYER)
+        {
+            me->DespawnOrUnsummon();
+            return;
+        }
+
+        _ownerGUID = summoner->GetGUID();
+        me->SetReactState(REACT_PASSIVE);
+        me->SetWalk(false);
+        // Out of every player's sight her grid would stop updating and she would stay where she was: active, the check moves on
+        me->setActive(true, ActiveFlags::Script);
+        me->GetMotionMaster()->Clear(false);
+        me->GetMotionMaster()->MoveFollow(summoner, PET_FOLLOW_DIST, float(M_PI / 2));
+
+        _events.Reset();
+        _events.ScheduleEvent(EVENT_SAY_WAIT_UP, 1s);
+        _events.ScheduleEvent(EVENT_SAY_TRAINING, 5s);
+        _events.ScheduleEvent(EVENT_SAY_RAPTORS, 11s);
+        _events.ScheduleEvent(EVENT_CHECK, 1s);
+        _lifetime = ZUNI_BRIDGE_LIFETIME;
+    }
+
+    // Not the core's follow-on-spawn (CreatureAI::JustAppeared): IsSummonedBy sets her movement
+    void JustAppeared() override { }
+    void AttackStart(Unit* /*who*/) override { }
+    void MoveInLineOfSight(Unit* /*who*/) override { }
+    void EnterEvadeMode(EvadeReason /*why*/) override { }
+
+    void MovementInform(uint32 type, uint32 id) override
+    {
+        if (type == POINT_MOTION_TYPE && id == EchoIslesZuniBridge::POINT_BRIDGE_RUN_OFF)
+            me->DespawnOrUnsummon();
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        using namespace EchoIslesZuniBridge;
+
+        if (_ownerGUID.IsEmpty())
+            return;
+
+        if (!_leaving)
+        {
+            if (_lifetime <= diff)
+            {
+                TC_LOG_DEBUG("scripts", "npc_echo_isles_zuni_bridge: 10 minutes up, Zuni leaves");
+                me->DespawnOrUnsummon();
+                _ownerGUID.Clear();
+                return;
+            }
+            _lifetime -= diff;
+        }
+
+        _events.Update(diff);
+        while (uint32 eventId = _events.ExecuteEvent())
+        {
+            switch (eventId)
+            {
+                case EVENT_SAY_WAIT_UP:
+                    Say(SAY_BRIDGE_WAIT_UP);
+                    break;
+                case EVENT_SAY_TRAINING:
+                    Say(SAY_BRIDGE_TRAINING);
+                    break;
+                case EVENT_SAY_RAPTORS:
+                    Say(SAY_BRIDGE_RAPTORS);
+                    break;
+                case EVENT_CHECK:
+                    if (!Check())
+                        return;
+                    _events.ScheduleEvent(EVENT_CHECK, 1s);
+                    break;
+                default:
+                    break;
+            }
+        }
+    }
+
+private:
+    enum
+    {
+        EVENT_SAY_WAIT_UP = 1,
+        EVENT_SAY_TRAINING,
+        EVENT_SAY_RAPTORS,
+        EVENT_CHECK,
+    };
+
+    Player* GetOwnerPlayer() const { return ObjectAccessor::GetPlayer(*me, _ownerGUID); }
+
+    // Personal (creature_text TextRange 5): she is a personal summon, nobody else sees her
+    void Say(uint8 group)
+    {
+        if (Player* owner = GetOwnerPlayer())
+            Talk(group, owner);
+    }
+
+    bool Check()
+    {
+        using namespace EchoIslesZuniBridge;
+
+        Player* owner = GetOwnerPlayer();
+        if (!owner || !owner->IsInWorld() || owner->GetMapId() != me->GetMapId() || !owner->IsAlive()
+            || !me->IsWithinDistInMap(owner, ZUNI_BRIDGE_LEASH))
+        {
+            TC_LOG_DEBUG("scripts", "npc_echo_isles_zuni_bridge: owner gone, dead or more than 100 yd away, Zuni leaves");
+            Leave();
+            return false;
+        }
+
+        // Back at the Hold (24622 handed in, 24623 not taken, walked away): the Hold has its own Zuni
+        if (owner->GetAreaId() == AREA_DARKSPEAR_HOLD || me->GetAreaId() == AREA_DARKSPEAR_HOLD)
+        {
+            TC_LOG_DEBUG("scripts", "npc_echo_isles_zuni_bridge: Darkspear Hold reached, Zuni leaves");
+            Leave();
+            return false;
+        }
+
+        if (_leaving)
+            return true;
+
+        if (owner->GetQuestStatus(QUEST_SAVING_THE_YOUNG) != QUEST_STATUS_NONE)
+        {
+            RunOff(owner);
+            return true;
+        }
+
+        if (owner->GetQuestStatus(QUEST_A_TROLLS_TRUEST_COMPANION) == QUEST_STATUS_NONE)
+        {
+            TC_LOG_DEBUG("scripts", "npc_echo_isles_zuni_bridge: 24622 abandoned, Zuni leaves");
+            Leave();
+            return false;
+        }
+        return true;
+    }
+
+    void Leave()
+    {
+        _events.Reset();
+        _ownerGUID.Clear();
+        me->DespawnOrUnsummon();
+    }
+
+    // Saving the Young taken: her line, then off towards the hatchlings' island
+    void RunOff(Player* owner)
+    {
+        using namespace EchoIslesZuniBridge;
+
+        _leaving = true;
+        _events.CancelEvent(EVENT_SAY_WAIT_UP);
+        _events.CancelEvent(EVENT_SAY_TRAINING);
+        _events.CancelEvent(EVENT_SAY_RAPTORS);
+        Talk(SAY_BRIDGE_RUN_OFF, owner);
+
+        float const angle = me->GetAngle(HatchlingIslePos.GetPositionX(), HatchlingIslePos.GetPositionY());
+        Position dest = me->GetNearPosition(ZUNI_BRIDGE_RUN_OFF_DIST, angle - me->GetOrientation());
+        me->GetMotionMaster()->Clear(false);
+        me->GetMotionMaster()->MovePoint(POINT_BRIDGE_RUN_OFF, dest);
+        me->DespawnOrUnsummon(ZUNI_BRIDGE_GONE_DELAY);
+    }
+
+    ObjectGuid _ownerGUID;
+    EventMap _events;
+    uint32 _lifetime = 0;
+    bool _leaving = false;
+};
+
 void AddSC_echo_isles()
 {
     new creature_script<npc_echo_isles_tiki_target>("npc_echo_isles_tiki_target");
     new quest_echo_isles_trainer_praise();
+    new at_echo_isles_zuni_bridge();
+    new creature_script<npc_echo_isles_zuni_bridge>("npc_echo_isles_zuni_bridge");
 }
