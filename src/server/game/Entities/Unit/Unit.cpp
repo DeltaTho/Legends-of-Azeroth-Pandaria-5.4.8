@@ -16671,6 +16671,23 @@ void Unit::SetConfused(bool apply)
         player->SetClientControl(this, !apply);
 }
 
+// Vehicles whose seat hands the rider control (VEHICLE_SEAT_FLAG_CAN_CONTROL) but which the server moves along a scripted path:
+// they keep their AI and motion when charmed, and the rider's client is not made their mover, so the server's splines carry them.
+static bool IsServerDrivenControlVehicle(uint32 entry)
+{
+    switch (entry)
+    {
+        case 69458: // Thunderwing
+        case 67275: // Kor'kron Gunship
+        case 68849: // Skyfire Gyrocopter
+        case 72952: // Noodle Stand
+        case 38991: // Bloodtalon Thrasher - Breaking the Line 25035, SmartAI path 38991 to Spitescale Cove
+            return true;
+        default:
+            return false;
+    }
+}
+
 bool Unit::SetCharmedBy(Unit* charmer, CharmType type, AuraApplication const* aurApp)
 {
     if (!charmer)
@@ -16757,7 +16774,7 @@ bool Unit::SetCharmedBy(Unit* charmer, CharmType type, AuraApplication const* au
 
     charmer->SetCharm(this, true);
 
-    if (GetTypeId() == TYPEID_UNIT && this->GetEntry() != 69458 && this->GetEntry() != 67275 && this->GetEntry() != 68849 && this->GetEntry() != 72952)
+    if (GetTypeId() == TYPEID_UNIT && !IsServerDrivenControlVehicle(GetEntry()))
     {
         ToCreature()->AI()->OnCharmed(true);
         GetMotionMaster()->MoveIdle(); // Stop random movement
@@ -16819,7 +16836,7 @@ bool Unit::SetCharmedBy(Unit* charmer, CharmType type, AuraApplication const* au
                 SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_PLAYER_CONTROLLED);
                 charmer->ToPlayer()->SetClientControl(this, 1);
 
-                if (this->GetEntry() != 69458 && this->GetEntry() != 67275 && this->GetEntry() != 68849 && this->GetEntry() != 72952)
+                if (!IsServerDrivenControlVehicle(GetEntry()))
                     charmer->ToPlayer()->SetMover(this);
 
                 charmer->ToPlayer()->VehicleSpellInitialize();
