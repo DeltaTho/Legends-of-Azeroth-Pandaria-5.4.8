@@ -4,8 +4,8 @@
 -- than 16 yd from it; retail Screechers wander 15 yd, Scytheclaws 10). King Reaperclaw and his consorts are left alone.
 -- SOURCED (the spawn matched to the TDB spot, nearest first within 20 yd, stays):
 --   Lashtail 3254:   keep 265552 (TDB 301778 6.7 yd), delete 265236 (3.3 yd away); keep 265271 (TDB 301772 6.9), delete 265546
---                    (2.6); keep 265550 (TDB 301776 3.0), delete 265334 (7.4); keep 265533 (TDB 301759), delete 265269 (10.4).
---   Screecher 3255:  keep 264410 (TDB 303396 1.5), delete 263516 (5.6); keep 265146 (TDB 302256), delete 263294 (9.4);
+--                    (2.6); keep 265550 (TDB 301776 3.0), delete 265334 (7.4); keep 265540 (TDB 301759), delete 265269 (10.4).
+--   Screecher 3255:  keep 264410 (TDB 303396 1.5), delete 263516 (5.6); keep 265146 (TDB 302256); 263294 moves to TDB 302255 (36 yd off; review);
 --                    keep 264402 (TDB 303400), delete 263499 (12.5); keep 264409 (TDB 303394), delete 263515 (13.8);
 --                    keep 265013 (TDB 302573), delete 263765 (14.4); keep 263514 (TDB 303364), delete 264408 (15.0).
 --   Scytheclaw 3256: keep 265491 (TDB 302164), delete 262802 (12.6).
@@ -20,6 +20,9 @@
 DELETE FROM `waypoint_data` WHERE `id`=264759;
 DELETE FROM `creature_addon` WHERE `guid`=264759;
 DELETE FROM `creature` WHERE `id`=3254 AND `guid` IN (265236,265269,265334,265546);
-DELETE FROM `creature` WHERE `id`=3255 AND `guid` IN (263294,263499,263515,263516,263765,264408,265253,265442);
+DELETE FROM `creature` WHERE `id`=3255 AND `guid` IN (263301,263499,263515,263516,263765,264408,265253,265442);
+-- Review: 263294 is the only Screecher near retail spot 302255, so it moves there instead of going; 263301 (9.0 yd from
+-- 263296, no retail spot near either) goes like the other unmatched pairs.
+UPDATE `creature` SET `position_x`=-883.051, `position_y`=-3266.42, `position_z`=94.5564, `orientation`=4.70848 WHERE `guid`=263294 AND `id`=3255;
 DELETE FROM `creature` WHERE `id`=3256 AND `guid` IN (262802,264759,264774,264775);
 DELETE FROM `creature` WHERE `id`=44167 AND `guid`=264866;
