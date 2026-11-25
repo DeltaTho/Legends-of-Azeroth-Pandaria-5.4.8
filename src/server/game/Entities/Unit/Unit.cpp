@@ -18596,12 +18596,12 @@ void Unit::_ExitVehicle(Position const* exitPosition)
     init.SetTransportExit();
     init.Launch();
 
-    // Give the pet back a moment after the exit, not in the same update. The client fires UNIT_PET when the owner's
-    // summon field changes, and the 5.4.8 PetFrame (FrameXML PetFrame_OnEvent) then takes "player" as its unit when
+    // Give the pet back a moment after the exit, not in the same update. The client fires UNIT_PET when SMSG_PET_SPELLS
+    // brings a new pet guid (CGPetInfo::SetPet; the owner's summon field changing fires nothing), and the 5.4.8 PetFrame (FrameXML PetFrame_OnEvent) then takes "player" as its unit when
     // UnitInVehicle("player") and UnitHasVehiclePlayerFrameUI("player") are still true. On seats without the art-swap
     // flag (0x20000000 - e.g. 7347 Swiftclaw, 7577 Bloodtalon Thrasher) the PlayerFrame never swaps, so nothing swaps
     // the PetFrame back on the exit: it kept showing (and targeting) the hunter until a relog. Once the client has
-    // left the seat, UNIT_PET sets the PetFrame back to "pet".
+    // left the seat, the resummon's SMSG_PET_SPELLS fires UNIT_PET and sets the PetFrame back to "pet".
     if (player)
     {
         player->m_Events.Schedule(1000, [player]()
