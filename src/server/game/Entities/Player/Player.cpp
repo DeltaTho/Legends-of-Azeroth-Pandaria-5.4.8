@@ -15710,7 +15710,7 @@ void Player::PrepareGossipMenu(WorldObject* source, uint32 menuId /*= 0*/, bool 
     }
 }
 
-void Player::SendPreparedGossip(WorldObject* source)
+void Player::SendPreparedGossip(WorldObject* source, bool allowAutoAccept /*= true*/)
 {
     if (!source)
         return;
@@ -15720,7 +15720,7 @@ void Player::SendPreparedGossip(WorldObject* source)
         // only use quest menu with one quest, otherwise use gossip menu
         if (PlayerTalkClass->GetGossipMenu().Empty() && PlayerTalkClass->GetQuestMenu().GetMenuItemCount() == 1)
         {
-            SendPreparedQuest(source);
+            SendPreparedQuest(source, allowAutoAccept);
             return;
         }
     }
@@ -16009,14 +16009,25 @@ static bool IsPlainTurnIn(Quest const* quest)
     return true;
 }
 
-void Player::SendPreparedQuest(WorldObject* source)
+void Player::SendPreparedQuest(WorldObject* source, bool allowAutoAccept /*= true*/)
 {
     QuestMenu& questMenu = PlayerTalkClass->GetQuestMenu();
     if (questMenu.Empty())
         return;
 
+    // The single-quest shortcut below accepts a lone auto-accept quest on sight. When the menu comes back on its own after a
+    // reward (SendQuestGiverMenuAfterReward, allowAutoAccept false), nothing may be accepted without a click, so that quest is
+    // sent as a one-line quest list instead: picking it there accepts it as before (HandleQuestgiverQueryQuestOpcode). Its
+    // details page cannot stand in: the 5.4.8 client treats a details page carrying the auto-accept flag 0x80000 as a quest
+    // already taken (QuestFrame.cpp:986 QuestGetAutoAccept, 1282 AcknowledgeAutoAcceptQuest).
+    bool singleQuest = questMenu.GetMenuItemCount() == 1;
+    if (singleQuest && !allowAutoAccept && questMenu.GetItem(0).QuestIcon != 4)
+        if (Quest const* quest = sObjectMgr->GetQuestTemplate(questMenu.GetItem(0).QuestId))
+            if (quest->IsAutoAccept())
+                singleQuest = false;
+
     // single element case
-    if (questMenu.GetMenuItemCount() == 1)
+    if (singleQuest)
     {
         QuestMenuItem const& qmi0 = questMenu.GetItem(0);
         uint32 questId = qmi0.QuestId;
@@ -16094,6 +16105,88 @@ void Player::SendPreparedQuest(WorldObject* source)
             }
         }
         PlayerTalkClass->SendQuestGiverQuestList(qe, title, source->GetGUID());
+    }
+}
+
+// After "Complete Quest" the window goes back to the giver's dialogue when it still has anything to offer: quests this player
+// can take or hand in, or gossip options. That is the menu a fresh click on the giver would show, sent through the same script
+// and DB path as that click. With nothing to offer the window stays closed (the QUEST_COMPLETE bits already closed it). The
+// 5.4.8 packet has no bit for this (TC master's LaunchQuest arrives in 6.x), so the server sends the menu itself.
+// Only called from HandleQuestgiverChooseRewardOpcode, and only when neither a follow-up quest nor a reward script sent
+// anything to the window, so playerbots (which call RewardQuest directly) and scripted rewards never get here.
+// Nothing is accepted on the player's behalf: SendPreparedGossip/SendPreparedQuest run with allowAutoAccept false.
+// The prepared menu has a gossip option, or a quest the player can take or hand in. A quest still in progress alone does not
+// count: its progress page is no offer, and a click on the giver remains the way to see it.
+bool Player::PreparedMenuOffersSomething() const
+{
+    if (!PlayerTalkClass->GetGossipMenu().Empty())
+        return true;
+
+    QuestMenu& questMenu = PlayerTalkClass->GetQuestMenu();
+    for (uint8 i = 0; i < questMenu.GetMenuItemCount(); ++i)
+        if (GetQuestStatus(questMenu.GetItem(i).QuestId) != QUEST_STATUS_INCOMPLETE)
+            return true;
+
+    return false;
+}
+
+void Player::SendQuestGiverMenuAfterReward(ObjectGuid questGiverGuid, Quest const* rewardedQuest)
+{
+    if (questGiverGuid.IsAnyTypeCreature())
+    {
+        // still there and usable: a reward hook may have despawned it or taken its flags (SmartAI actions 41, 83)
+        Creature* creature = GetNPCIfCanInteractWith(questGiverGuid, UNIT_NPC_FLAG_NONE);
+        if (!creature)
+            return;
+
+        // Anything to offer? Its DB menu with quests, as the click below builds it.
+        PrepareGossipMenu(creature, creature->GetGossipMenuId(), true);
+        bool gossipNpc = creature->HasFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_GOSSIP);
+        bool offers = PreparedMenuOffersSomething()
+            // a quest flagged to relaunch the gossip on completion reopens it even when only the text is left
+            || (gossipNpc && rewardedQuest->HasFlag(QUEST_FLAGS_LAUNCH_GOSSIP_COMPLETE));
+        PlayerTalkClass->ClearMenus();
+        if (!offers)
+            return;
+
+        if (gossipNpc)
+        {
+            // what a click on a gossip NPC does: CMSG_GOSSIP_HELLO, HandleGossipHelloOpcode (NPCHandler.cpp)
+            if (sScriptMgr->OnGossipHello(this, creature) || creature->AI()->OnGossipHello(this))
+                return;
+
+            PrepareGossipMenu(creature, creature->GetGossipMenuId(), true);
+            SendPreparedGossip(creature, false);
+        }
+        else
+        {
+            // what a click on a quest-only NPC does: CMSG_QUESTGIVER_HELLO, HandleQuestgiverHelloOpcode (QuestHandler.cpp)
+            if (sScriptMgr->OnGossipHello(this, creature))
+                return;
+
+            PrepareGossipMenu(creature, creature->GetGossipMenuId(), true);
+            SendPreparedGossip(creature, false);
+            creature->AI()->OnGossipHello(this);
+        }
+    }
+    else if (questGiverGuid.IsGameObject())
+    {
+        GameObject* go = GetGameObjectIfCanInteractWith(questGiverGuid, GAMEOBJECT_TYPE_QUESTGIVER);
+        if (!go)
+            return;
+
+        PrepareGossipMenu(go, go->GetGOInfo()->questgiver.gossipID, true);
+        bool offers = PreparedMenuOffersSomething();
+        PlayerTalkClass->ClearMenus();
+        if (!offers)
+            return;
+
+        // what a click on a quest object does: CMSG_GAMEOBJ_USE -> GameObject::Use (GameObject.cpp:1335-1367)
+        if (sScriptMgr->OnGossipHello(this, go) || go->AI()->OnGossipHello(this, true))
+            return;
+
+        PrepareGossipMenu(go, go->GetGOInfo()->questgiver.gossipID, true);
+        SendPreparedGossip(go, false);
     }
 }
 
@@ -16955,8 +17048,17 @@ void Player::RewardQuest(Quest const* quest, uint32 reward, Object* questGiver, 
      CharacterDatabaseTransaction trans = CharacterDatabaseTransaction(nullptr);
     _SaveQuestStatus(trans);
 
+    // The follow-up quest offered in place (sent below), worked out before QUEST_COMPLETE goes out because that packet tells the
+    // client whether to keep the window open for it (SendQuestReward). The quest is already marked rewarded above, so
+    // CanTakeQuest sees the state after this reward (as TC master's SendQuestReward).
+    Quest const* nextQuest = nullptr;
+    if (questGiver && questGiver->IsWorldObject())
+        if (Quest const* next = GetNextQuest(questGiver, quest))
+            if (CanTakeQuest(next, false))
+                nextQuest = next;
+
     if (announce)
-        SendQuestReward(quest, XP);
+        SendQuestReward(quest, XP, nextQuest && questGiver != this && !quest->HasFlag(QUEST_FLAGS_AUTO_COMPLETE));
 
     // cast spells after mark quest complete (some spells have quest completed state requirements in spell_area data)
     // #514: the cast spell (RewardSpell) wins and the display spell is only the fallback - as the Init tree, AC
@@ -16999,17 +17101,13 @@ void Player::RewardQuest(Quest const* quest, uint32 reward, Object* questGiver, 
     if (questGiver && questGiver->IsWorldObject())
     {
         //For AutoSubmition was added plr case there as it almost same exclute AI script cases.
-        // Send next quest
-        if (Quest const* nextQuest = GetNextQuest(questGiver, quest))
+        // Send next quest (GetNextQuest + CanTakeQuest, checked above)
+        if (nextQuest)
         {
-            // Only send the quest to the player if the conditions are met
-            if (CanTakeQuest(nextQuest, false))
-            {
-                if (nextQuest->IsAutoAccept() && CanAddQuest(nextQuest, true))
-                    AddQuestAndCheckCompletion(nextQuest, questGiver);
+            if (nextQuest->IsAutoAccept() && CanAddQuest(nextQuest, true))
+                AddQuestAndCheckCompletion(nextQuest, questGiver);
 
-                PlayerTalkClass->SendQuestGiverQuestDetails(nextQuest, questGiver->GetGUID(), true, false);
-            }
+            PlayerTalkClass->SendQuestGiverQuestDetails(nextQuest, questGiver->GetGUID(), true, false);
         }
 
         PlayerTalkClass->ClearMenus();
@@ -18468,7 +18566,7 @@ void Player::SendQuestComplete(uint32 questId) const
     }
 }
 
-void Player::SendQuestReward(Quest const* quest, uint32 XP)
+void Player::SendQuestReward(Quest const* quest, uint32 XP, bool keepWindowForNextQuest)
 {
     uint32 questId = quest->GetQuestId();
     TC_LOG_DEBUG("network", "WORLD: Sent SMSG_QUESTGIVER_QUEST_COMPLETE quest = %u", questId);
@@ -18485,7 +18583,18 @@ void Player::SendQuestReward(Quest const* quest, uint32 XP)
     moneyReward = quest->GetRewOrReqMoney(this);
 
     WorldPacket data(SMSG_QUESTGIVER_QUEST_COMPLETE, 4 + 4 + 4 + 4 + 4 + 4 + 1);
-    data.WriteBit(1);                                      // FIXME: unknown bits, common values sent
+    // What the quest window does after this packet is the client's call (5.4.8 decomp: Player_C.cpp:6776-6777
+    // QuestCompleteCallback -> QuestFrame.cpp:616-648 QuestGiverFinished; the 4.3.4 client is the same with the bits swapped,
+    // which is how CataPP's LaunchGossip/UseQuestReward names pin down what each bit does).
+    // 1st bit: keep the window open, the follow-up quest's details are on their way (TC UseQuestReward). The client keeps it
+    //   only if its cached quest also has a next quest and is not AUTO_COMPLETE. The old constant 1 ("unknown bits") left the
+    //   window hanging on the spent reward page whenever no details followed: a RewardNextQuest that the ender does not start
+    //   (1842 quests) or that the player cannot take. Now 1 only when RewardQuest really sends the details.
+    // 2nd bit: close, then the client sends CMSG_GOSSIP_HELLO to the giver (TC LaunchGossip). Left 0: the reward handler sends
+    //   the giver's menu itself after the reward hooks (SendQuestGiverMenuAfterReward, which also honours
+    //   QUEST_FLAGS_LAUNCH_GOSSIP_COMPLETE), so a reward script that opens or closes the window is not overdrawn by a later
+    //   hello, and quest-only NPCs, which refuse CMSG_GOSSIP_HELLO (HandleGossipHelloOpcode needs the gossip flag), get it too.
+    data.WriteBit(keepWindowForNextQuest);
     data.WriteBit(0);
     data.FlushBits();
 
