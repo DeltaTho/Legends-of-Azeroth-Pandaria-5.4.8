@@ -313,7 +313,7 @@ public:
                 {
                     if (*factionEntry->name)
                     {
-                        name = factionEntry->name[i];
+                        name = factionEntry->name;
                         if (!Utf8FitTo(name, wNamePart))
                             continue;
 
@@ -433,20 +433,25 @@ public:
             bool match = false;
             if (ItemSparseEntry const* itemSparse = sItemSparseStore.LookupEntry(itr->second.ItemId))
             {
+                // Name points at the per-locale string holder; indexing the pointer itself
+                // reads single bytes of it, so no Item-sparse.db2 item could ever match
                 for (int32 i = 0; i < TOTAL_LOCALES; ++i)
                 {
-                    if (itemSparse->Name[i])
-                    {
-                        name = itemSparse->Name[i];
-                        if (!Utf8FitTo(name, wNamePart))
-                            continue;
+                    char const* localeName = itemSparse->Name->Str[i];
+                    if (!localeName || !*localeName)
+                        continue;
 
-                        match = true;
-                        break;
-                    }
+                    name = localeName;
+                    if (!Utf8FitTo(name, wNamePart))
+                        continue;
+
+                    match = true;
+                    break;
                 }
             }
-            else
+
+            // item_template overrides the DB2 name (hotfixes, custom items)
+            if (!match && !itr->second.Name1.empty())
             {
                 name = itr->second.Name1;
                 match = Utf8FitTo(name, wNamePart);

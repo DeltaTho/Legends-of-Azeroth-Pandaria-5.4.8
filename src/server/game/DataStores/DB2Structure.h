@@ -217,11 +217,12 @@ struct ItemSparseEntry
     int32      SpellCategory[MAX_ITEM_PROTO_SPELLS];         // 89 - 89
     int32      SpellCategoryCooldown[MAX_ITEM_PROTO_SPELLS]; // 94 - 98
     uint32     Bonding;                                      // 99
-    char const*     Name;                                    // 100
-    char const*     Name2;                                   // 101
-    char const*     Name3;                                   // 102
-    char const*     Name4;                                   // 103
-    char const*     Description;                             // 104
+    // DB2 string fields hold a pointer to the per-locale string holder, not the text itself
+    LocalizedString const* Name;                             // 100
+    LocalizedString const* Name2;                            // 101
+    LocalizedString const* Name3;                            // 102
+    LocalizedString const* Name4;                            // 103
+    LocalizedString const* Description;                      // 104
     uint32     PageText;                                     // 105
     uint32     LanguageID;                                   // 106
     uint32     PageMaterial;                                 // 107

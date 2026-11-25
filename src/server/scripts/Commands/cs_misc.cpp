@@ -3538,7 +3538,7 @@ public:
                 if (sObjectMgr->GetItemSpecInfo(itemTemplate->ItemId, 90)->HasSpecializationId(spec))
                 {
                     if (auto const* sparse = sItemSparseStore.LookupEntry(itemTemplate->ItemId))
-                        name = sparse->Name[handler->GetSessionDbcLocale()];
+                        name = sparse->Name->Str[handler->GetSessionDbcLocale()];
                     else
                         name = itemTemplate->Name1;
                     handler->PSendSysMessage("%u - |cffffffff|Hitem:%d:0:0:0:0:0:0:0:0|h[%s]|h|r", itemTemplate->ItemId, itemTemplate->ItemId, name.c_str());
@@ -3565,7 +3565,7 @@ public:
         for (auto&& it : loot)
         {
             if (auto const* sparse = sItemSparseStore.LookupEntry(it->ItemId))
-                name = sparse->Name[handler->GetSessionDbcLocale()];
+                name = sparse->Name->Str[handler->GetSessionDbcLocale()];
             else
                 name = it->Name1;
             handler->PSendSysMessage("%u - |cffffffff|Hitem:%d:0:0:0:0:0:0:0:0|h[%s]|h|r", it->ItemId, it->ItemId, name.c_str());
