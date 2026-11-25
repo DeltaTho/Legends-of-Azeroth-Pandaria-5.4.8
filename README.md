@@ -35,6 +35,7 @@ passes will be required to test and validate the alliance's perspective.
 | Swamp of Sorrows | On [`pr/swamp-of-sorrows`](../../tree/pr/swamp-of-sorrows), not merged yet |
 | Blasted Lands | On [`pr/blasted-lands`](../../tree/pr/blasted-lands), not merged yet |
 | Durotar, with the Valley of Trials and the Echo Isles (orc and troll starting zones) | On [`pr/durotar`](../../tree/pr/durotar), not merged yet |
+| Northern Barrens | On [`pr/northern-barrens`](../../tree/pr/northern-barrens), not merged yet |
 
 ## Branches
 
@@ -51,5 +52,9 @@ passes will be required to test and validate the alliance's perspective.
 - `pr/durotar`: the Durotar set, with the Valley of Trials and the Echo Isles, on top of
   `pr/blasted-lands`. It also carries the breadcrumb-quest core support from `fixes`, which its
   quests need.
+- `pr/northern-barrens`: the Northern Barrens set (with Ratchet and the Mor'shan Rampart), on top of
+  `pr/durotar`. It also carries the core fixes its quests need: areatriggers measured from the player's
+  edge, exploration objectives kept after a relog, Permanent Feign Death cleared on removal, and a
+  unit that dies in a vehicle seat leaving it on the clients too.
 
 Branches of regions that have been merged are removed.
