@@ -2758,7 +2758,11 @@ bool Player::IsInAreaTrigger(const AreaTriggerEntry *areaTrigger) const
     switch (areaTrigger->ShapeType)
     {
         case 0: // Sphere
-            if (!IsInDist(&areaTriggerPos, areaTrigger->Radius))
+            // Measured from the player's edge (distance minus combat reach), as TrinityCore 3.3.5, CPP 4.3.4, AzerothCore and
+            // Legion do: the bare centre distance was 1.5 yd stricter than all of them, and the client reports the entry
+            // from its own position while the server still holds the last movement packet. The Forgotten Pools 870
+            // (trigger 216, radius 9, centre on the pool floor 10 yd under the surface) left a swimmer over the bubbles outside.
+            if (GetDistance(areaTriggerPos.GetPositionX(), areaTriggerPos.GetPositionY(), areaTriggerPos.GetPositionZ()) > areaTrigger->Radius)
                 return false;
             break;
         case 1: // Box
