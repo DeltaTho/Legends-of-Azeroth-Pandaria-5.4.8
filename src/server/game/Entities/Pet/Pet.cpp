@@ -343,6 +343,23 @@ bool Pet::LoadPetFromDB(PetLoadMode mode, uint32 param, Position const* pos)
     CleanupActionBar();                                     // remove unknown spells from action bar after load
     owner->PetSpellInitialize();
 
+    // Send the bar once more when the client knows the pet as the owner's. The 5.4.8 PetActionBar shows only on
+    // PET_BAR_UPDATE / UNIT_PET / PET_UI_UPDATE / UPDATE_VEHICLE_ACTIONBAR, and only if UnitIsVisible("pet"), where "pet"
+    // is the owner's UNIT_FIELD_CHARM, else UNIT_FIELD_SUMMON (client Script_GetGUIDFromToken). The packet above goes out
+    // at once, but the owner's summon field set by SetMinion above leaves with the map's object updates at the end of
+    // this tick, and its arrival fires no bar event (the client's PetChangeHandler only looks for a possess spell). So
+    // the bar could be dropped and never shown: seen after a vehicle exit (Northern Barrens caravan turret, play test
+    // 2026-11-25), where the resummon is the only bar the pet gets, until a relog (CGPetInfo::EnterWorld asks again).
+    // TrinityCore and AzerothCore send it from the pet query holder's callback, after that update.
+    ObjectGuid const petGuid = GetGUID();
+    owner->m_Events.Schedule(500, [owner, petGuid]()
+    {
+        Pet* pet = owner->GetPet();
+        // not over a vehicle's or a charm's bar, which owns the client's one pet bar while it lasts
+        if (owner->IsInWorld() && pet && pet->GetGUID() == petGuid && !owner->GetCharmGUID() && !owner->GetVehicle())
+            owner->PetSpellInitialize();
+    });
+
     if (owner->GetGroup())
         owner->SetGroupUpdateFlag(GROUP_UPDATE_PET);
 
