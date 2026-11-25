@@ -788,7 +788,8 @@ class npc_razormane_pillager : public CreatureScript
             if (creature->IsQuestGiver())
                 player->PrepareQuestMenu(creature->GetGUID());
 
-            if (player->GetQuestStatus(QUEST_DRAG_IT_OUT_OF_THEM) != QUEST_STATUS_INCOMPLETE)
+            // Only a netted pillager can be pounded (the net gives it the gossip flag, see spell_snared_in_net)
+            if (player->GetQuestStatus(QUEST_DRAG_IT_OUT_OF_THEM) != QUEST_STATUS_INCOMPLETE || !creature->HasAura(SPELL_SNARED_IN_NET))
                 return false;
 
             player->ADD_GOSSIP_ITEM_DB(player->GetDefaultGossipMenuForSource(creature), 0, GOSSIP_SENDER_MAIN, GOSSIP_ACTION_INFO_DEF + 1);
@@ -939,6 +940,8 @@ class spell_groldom_net : public SpellScript
 // ensnared, turns friendly (green) and lies stunned; whoever was fighting it (the player, Grol'dom Grunts) lets go. If nobody
 // pounds it, after 300 s it emotes that it breaks out, turns hostile and walks home. Ours: the 300 s (kept from the old script).
 // Before: a pillager in combat went friendly with a victim still set, evaded the next tick and Reset made it hostile (CB-1).
+// The gossip flag (the "pound it" option) exists only while the net holds: both TDBs have npcflag 0 on 34503, and a hostile
+// pillager that always carried GOSSIP opened gossip on right-click instead of being attacked (play test 2026-11-24, 13973).
 class spell_snared_in_net : public AuraScript
 {
     PrepareAuraScript(spell_snared_in_net);
@@ -954,6 +957,7 @@ class spell_snared_in_net : public AuraScript
         owner->GetMotionMaster()->Clear();
         owner->GetMotionMaster()->MoveIdle();
         owner->SetFaction(FACTION_NETTED_PILLAGER);
+        owner->SetFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_GOSSIP);
         if (owner->IsAIEnabled)
             owner->AI()->Talk(TALK_PILLAGER_ENSNARED);
 
@@ -968,6 +972,7 @@ class spell_snared_in_net : public AuraScript
         if (!owner || !owner->IsAlive() || !owner->IsInWorld())
             return;
 
+        owner->RemoveFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_GOSSIP);
         owner->RestoreFaction();
         if (GetTargetApplication()->GetRemoveMode() == AURA_REMOVE_BY_EXPIRE && owner->IsAIEnabled)
         {
