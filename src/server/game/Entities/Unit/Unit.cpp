@@ -12691,6 +12691,13 @@ void Unit::setDeathState(DeathState s)
     // test the death state when creating soul shards).
     m_deathState = s;
 
+    // A unit that dies seated leaves its vehicle below, and _ExitVehicle launches the transport-exit spline that tells the
+    // clients it is off. The StopMoving() further down would replace that spline with a stop in the same update (the exit
+    // spline is not finalized yet), so the clients never see the exit: a player's own client kept him attached to the
+    // vehicle and his view rode on with it after death (Northern Barrens caravan 29111, play test 2026-11-25), and observers
+    // kept a dead passenger on his mount. Such a unit is not moving by itself, so it needs no stop.
+    bool const leftVehicle = s != ALIVE && s != JUST_RESPAWNED && GetVehicle();
+
     if (s != ALIVE && s != JUST_RESPAWNED)
     {
         CombatStop();
@@ -12725,8 +12732,11 @@ void Unit::setDeathState(DeathState s)
             GetMotionMaster()->Clear(false);
             GetMotionMaster()->MoveIdle();
         }
-        StopMoving();
-        DisableSpline();
+        if (leftVehicle)
+            ClearUnitState(UNIT_STATE_MOVING);
+        else
+            StopMoving();
+        DisableSpline();   // server side only (marks the spline done, so Player::KillPlayer's root sends no stop either)
         // without this when removing IncreaseMaxHealth aura player may stuck with 1 hp
         // do not why since in IncreaseMaxHealth currenthealth is checked
         SetHealth(0);
