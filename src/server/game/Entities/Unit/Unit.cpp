@@ -17040,7 +17040,21 @@ void Unit::RemoveCharmedBy(Unit* charmer)
 
     // a guardian should always have charminfo
     if (charmer->GetTypeId() == TYPEID_PLAYER && this != charmer->GetFirstControlled())
-        charmer->ToPlayer()->SendRemoveControlBar();
+    {
+        // The client has one bar for a pet, a charm and a vehicle (CGPetInfo::OnPetSpells: each SMSG_PET_SPELLS replaces
+        // the last), and the charm's bar replaced the pet's. If a pet or controllable guardian is still out (a seat that
+        // keeps the pet, a charm cast with the pet out), give its bar back instead of an empty one, as SetMinion does when
+        // a minion goes; the empty one left the pet without a bar until a relog (pet spells are sent again only on a load).
+        Player* playerCharmer = charmer->ToPlayer();
+        Unit* remaining = playerCharmer->GetFirstControlled();
+        Pet* pet = playerCharmer->GetPet();
+        if (remaining && remaining == pet && !pet->IsTemporary())
+            playerCharmer->PetSpellInitialize();
+        else if (remaining && !remaining->IsPet() && remaining->HasUnitTypeMask(UNIT_MASK_CONTROLABLE_GUARDIAN) && remaining->GetCharmInfo())
+            playerCharmer->CharmSpellInitialize();
+        else
+            playerCharmer->SendRemoveControlBar();
+    }
     else if (GetTypeId() == TYPEID_PLAYER || (GetTypeId() == TYPEID_UNIT && !ToCreature()->IsGuardian()))
         DeleteCharmInfo();
 
