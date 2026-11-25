@@ -347,9 +347,15 @@ class PlayerMenu
 
         static void AddQuestLevelToTitle(std::string &title, int32 level);
 
+        // Counts the packets that open, change or close the player's gossip/quest window (gossip menu, gossip complete, quest
+        // list, details, request items, offer reward). The quest reward handler compares it before and after RewardQuest to
+        // tell whether a follow-up quest or a reward script already decided what the window shows.
+        uint32 GetWindowPacketCount() const { return _windowPacketCount; }
+
     private:
         GossipMenu _gossipMenu;
         QuestMenu  _questMenu;
         WorldSession* _session;
+        mutable uint32 _windowPacketCount = 0;
 };
 #endif

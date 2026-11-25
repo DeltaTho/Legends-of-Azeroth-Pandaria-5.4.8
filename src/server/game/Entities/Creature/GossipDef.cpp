@@ -279,6 +279,7 @@ void PlayerMenu::SendGossipMenu(uint32 titleTextId, ObjectGuid objectGUID) const
     data.WriteByteSeq(guid[7]);
     data << int32(titleTextId);
 
+    ++_windowPacketCount;
     _session->SendPacket(&data);
 }
 
@@ -286,6 +287,7 @@ void PlayerMenu::SendCloseGossip() const
 {
     //_gossipMenu.SetSenderGUID(ObjectGuid::Empty);
     WorldPacket data(SMSG_GOSSIP_COMPLETE, 0);
+    ++_windowPacketCount;
     _session->SendPacket(&data);
 }
 
@@ -428,6 +430,7 @@ void PlayerMenu::SendQuestGiverQuestList(QEmote eEmote, const std::string& Title
     data.WriteString(Title);
     data.WriteByteSeq(npcGUID[4]);
 
+    ++_windowPacketCount;
     _session->SendPacket(&data);
 
     TC_LOG_DEBUG("network", "WORLD: Sent SMSG_QUESTGIVER_QUEST_LIST NPC Guid=%u", npcGUID.GetCounter());
@@ -655,6 +658,7 @@ void PlayerMenu::SendQuestGiverQuestDetails(Quest const* quest, ObjectGuid npcGU
     /*for (uint i = 0; i < unkCounterBits22; i++)
         data << uint32(0);*/ // LearnSpells
 
+    ++_windowPacketCount;
     _session->SendPacket(&data);
 
     TC_LOG_DEBUG("network", "WORLD: Sent SMSG_QUESTGIVER_QUEST_DETAILS NPCGuid=%u, questid=%u", npcGUID.GetCounter(), quest->GetQuestId());
@@ -1016,6 +1020,7 @@ void PlayerMenu::SendQuestGiverOfferReward(Quest const* quest, ObjectGuid npcGui
     data.WriteByteSeq(guid[4]);
     data.WriteByteSeq(guid[3]);
 
+    ++_windowPacketCount;
     _session->SendPacket(&data);
 
     TC_LOG_DEBUG("network", "WORLD: Sent SMSG_QUESTGIVER_OFFER_REWARD NPCGuid=%u, questid=%u", npcGuid.GetCounter(), quest->GetQuestId());
@@ -1135,6 +1140,7 @@ void PlayerMenu::SendQuestGiverRequestItems(Quest const* quest, ObjectGuid npcGu
     data.WriteByteSeq(guid[6]);
 
 
+    ++_windowPacketCount;
     _session->SendPacket(&data);
 
     TC_LOG_DEBUG("network", "WORLD: Sent SMSG_QUESTGIVER_REQUEST_ITEMS NPCGuid=%u, questid=%u", npcGuid.GetCounter(), quest->GetQuestId());

@@ -153,6 +153,7 @@ enum QuestFlags : uint32
     QUEST_FLAGS_AUTO_ACCEPT                 = 0x00080000,   // The client recognizes this flag as auto-accept. However, NONE of the current quests (3.3.5a) have this flag. Maybe blizz used to use it, or will use it in the future.
     QUEST_FLAGS_PLAYER_CAST_ACCEPT          = 0x00100000,   // Player Cast on Accept (TrinityCore): the player, not the giver, casts SourceSpellID; casts nothing itself
     QUEST_FLAGS_AUTO_TAKE                   = 0x00200000,   // Automatically suggestion of accepting quest. Not from npc.
+    QUEST_FLAGS_LAUNCH_GOSSIP_COMPLETE      = 0x01000000,   // Gossip on Quest Completion - Force Gossip (TC master): the giver's dialogue comes back after the reward (Player::SendQuestGiverMenuAfterReward)
     QUEST_FLAGS_REMOVE_SURPLUS_ITEMS        = 0x02000000,   // Remove Extra Get-Items (TC master): turn-in takes every copy of an item objective, not just the amount
     QUEST_FLAGS_WELL_KNOWN                  = 0x04000000,   // Well-Known
     QUEST_FLAGS_PORTRAIT_IN_QUEST_LOG       = 0x08000000,   // Portrait from Log

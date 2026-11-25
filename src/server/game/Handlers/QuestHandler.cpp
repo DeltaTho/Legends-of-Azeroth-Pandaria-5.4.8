@@ -508,7 +508,18 @@ void WorldSession::HandleQuestgiverChooseRewardOpcode(WorldPacket& recvData)
 
     if (_player->CanRewardQuest(quest, reward, true))
     {
+        ObjectGuid giverGuid = object->GetGUID();
+        uint32 windowPackets = _player->PlayerTalkClass->GetWindowPacketCount();
+
         _player->RewardQuest(quest, reward, object);
+
+        // The window after "Complete Quest": a follow-up quest is shown in place (RewardQuest sends its details), else the
+        // giver's dialogue comes back if it has anything left to offer, else it closes (the QUEST_COMPLETE bits, see
+        // SendQuestReward). RewardQuest sending any window packet means the follow-up quest went out or a reward hook
+        // (OnQuestReward script, SmartAI REWARD_QUEST, OnPlayerQuestRewarded) opened or closed the window itself: that wins
+        // and nothing is sent over it. Not for the quest-log hand-in (giver is the player) and never for bot sessions.
+        if (giverGuid != _player->GetGUID() && !IsBot() && _player->PlayerTalkClass->GetWindowPacketCount() == windowPackets)
+            _player->SendQuestGiverMenuAfterReward(giverGuid, quest);
     }
     else
         _player->PlayerTalkClass->SendQuestGiverOfferReward(quest, guid, true);
