@@ -3537,9 +3537,10 @@ public:
             {
                 if (sObjectMgr->GetItemSpecInfo(itemTemplate->ItemId, 90)->HasSpecializationId(spec))
                 {
+                    name.clear();
                     if (auto const* sparse = sItemSparseStore.LookupEntry(itemTemplate->ItemId))
                         name = sparse->Name->Str[handler->GetSessionDbcLocale()];
-                    else
+                    if (name.empty())   // no DB2 strings for this locale
                         name = itemTemplate->Name1;
                     handler->PSendSysMessage("%u - |cffffffff|Hitem:%d:0:0:0:0:0:0:0:0|h[%s]|h|r", itemTemplate->ItemId, itemTemplate->ItemId, name.c_str());
                 }
@@ -3564,9 +3565,10 @@ public:
         std::string name;
         for (auto&& it : loot)
         {
+            name.clear();
             if (auto const* sparse = sItemSparseStore.LookupEntry(it->ItemId))
                 name = sparse->Name->Str[handler->GetSessionDbcLocale()];
-            else
+            if (name.empty())   // no DB2 strings for this locale
                 name = it->Name1;
             handler->PSendSysMessage("%u - |cffffffff|Hitem:%d:0:0:0:0:0:0:0:0|h[%s]|h|r", it->ItemId, it->ItemId, name.c_str());
         }
