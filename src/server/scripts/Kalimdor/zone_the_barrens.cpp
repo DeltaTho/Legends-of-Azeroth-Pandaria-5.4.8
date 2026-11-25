@@ -856,6 +856,16 @@ class npc_razormane_pillager : public CreatureScript
                 fled = false;
             }
 
+            // A netted pillager never evades: an evade strips every aura, so it would lose the net and run home. The net's end
+            // (spell_snared_in_net) sends it home itself.
+            void EnterEvadeMode(EvadeReason why) override
+            {
+                if (me->HasAura(SPELL_SNARED_IN_NET))
+                    return;
+
+                ScriptedAI::EnterEvadeMode(why);
+            }
+
             // Both TDBs' SmartAI row 34503/0 "Between 0-15% Health - Flee For Assist (No Repeat)", dead here because the C++
             // ScriptName wins over AIName (13973 claim 6, CB-4). Once per life / evade.
             void DamageTaken(Unit* /*attacker*/, uint32& damage) override
@@ -917,19 +927,23 @@ class npc_razormane_pillager : public CreatureScript
 };
 
 // Grol`dom Net 65580
+// Effect 0 is the dummy, effect 1 ATTACK_ME (the pillager turns on the thrower). The net goes on after the whole spell has hit, as
+// the TDBs' SmartAI does it (34503/0 is an On SpellHit row): netted in effect 0, the pillager was made to attack the player by
+// effect 1, sat in combat with a friendly victim, evaded, lost the net with every other aura and ran home (play test 2026-11-24).
 class spell_groldom_net : public SpellScript
 {
     PrepareSpellScript(spell_groldom_net);
 
-    void HandleDummy(SpellEffIndex /*effIndex*/)
+    void HandleAfterHit()
     {
         if (Unit* target = GetHitUnit())
-            target->CastSpell(target, SPELL_SNARED_IN_NET, true);
+            if (target->IsAlive())
+                target->CastSpell(target, SPELL_SNARED_IN_NET, true);
     }
 
     void Register() override
     {
-        OnEffectHitTarget += SpellEffectFn(spell_groldom_net::HandleDummy, EFFECT_0, SPELL_EFFECT_DUMMY);
+        AfterHit += SpellHitFn(spell_groldom_net::HandleAfterHit);
     }
 };
 
@@ -954,8 +968,13 @@ class spell_snared_in_net : public AuraScript
 
         owner->CombatStop(true);   // also makes its attackers (players, Grunts) let go: Unit::RemoveAllAttackers
         owner->GetThreatManager().ClearAllThreat();
+        // A pillager netted while it flees for help (15 %) stops fleeing; the net holds it where it lies
+        if (owner->HasUnitState(UNIT_STATE_FLEEING))
+            owner->SetControlled(false, UNIT_STATE_FLEEING);
         owner->GetMotionMaster()->Clear();
         owner->GetMotionMaster()->MoveIdle();
+        owner->StopMoving();
+        owner->SetControlled(true, UNIT_STATE_ROOT);
         owner->SetFaction(FACTION_NETTED_PILLAGER);
         owner->SetFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_GOSSIP);
         if (owner->IsAIEnabled)
@@ -969,7 +988,11 @@ class spell_snared_in_net : public AuraScript
     void AfterRemove(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
     {
         Creature* owner = GetTarget()->ToCreature();
-        if (!owner || !owner->IsAlive() || !owner->IsInWorld())
+        if (!owner)
+            return;
+
+        owner->SetControlled(false, UNIT_STATE_ROOT);
+        if (!owner->IsAlive() || !owner->IsInWorld())
             return;
 
         owner->RemoveFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_GOSSIP);
