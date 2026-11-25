@@ -349,7 +349,9 @@ class PlayerMenu
 
         // Counts the packets that open, change or close the player's gossip/quest window (gossip menu, gossip complete, quest
         // list, details, request items, offer reward). The quest reward handler compares it before and after RewardQuest to
-        // tell whether a follow-up quest or a reward script already decided what the window shows.
+        // tell whether a follow-up quest or a reward script already decided what the window shows. Windows opened outside
+        // PlayerMenu (vendor, taxi, trainer, bank, cinematic, SMSG_QUESTGIVER_QUEST_INVALID) are not counted: a reward hook that
+        // opens one should also call SendCloseGossip, or the giver's menu is sent after it.
         uint32 GetWindowPacketCount() const { return _windowPacketCount; }
 
     private:

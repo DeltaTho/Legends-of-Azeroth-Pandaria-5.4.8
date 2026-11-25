@@ -1683,8 +1683,8 @@ class TC_GAME_API Player : public Unit, public GridObject<Player>
     /*********************************************************/
 
     void PrepareGossipMenu(WorldObject* source, uint32 menuId = 0, bool showQuests = false);
-    // allowAutoAccept false: a lone auto-accept quest is listed instead of accepted (see SendPreparedQuest)
-    void SendPreparedGossip(WorldObject* source, bool allowAutoAccept = true);
+    // singleQuestShortcut false: a lone quest is listed instead of opened, accepted or handed in (see SendPreparedQuest)
+    void SendPreparedGossip(WorldObject* source, bool singleQuestShortcut = true);
     void OnGossipSelect(WorldObject* source, uint32 gossipListId, uint32 menuId);
 
     uint32 GetGossipTextId(uint32 menuId, WorldObject* source);
@@ -1701,7 +1701,7 @@ class TC_GAME_API Player : public Unit, public GridObject<Player>
     }
 
     void PrepareQuestMenu(ObjectGuid guid);
-    void SendPreparedQuest(WorldObject* source, bool allowAutoAccept = true);
+    void SendPreparedQuest(WorldObject* source, bool singleQuestShortcut = true);
     void SendQuestGiverMenuAfterReward(ObjectGuid questGiverGuid, Quest const* rewardedQuest);
     bool PreparedMenuOffersSomething() const;
     bool IsActiveQuest(uint32 quest_id) const;

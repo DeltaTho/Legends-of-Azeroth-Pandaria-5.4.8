@@ -103,6 +103,7 @@
 #include "PoolMgr.h"
 #include "Vignette.h"
 #include "LootLockoutMap.h"
+#include "SmartScriptMgr.h"
 
 #define ZONE_UPDATE_INTERVAL (1*IN_MILLISECONDS)
 
@@ -15710,7 +15711,7 @@ void Player::PrepareGossipMenu(WorldObject* source, uint32 menuId /*= 0*/, bool 
     }
 }
 
-void Player::SendPreparedGossip(WorldObject* source, bool allowAutoAccept /*= true*/)
+void Player::SendPreparedGossip(WorldObject* source, bool singleQuestShortcut /*= true*/)
 {
     if (!source)
         return;
@@ -15720,7 +15721,7 @@ void Player::SendPreparedGossip(WorldObject* source, bool allowAutoAccept /*= tr
         // only use quest menu with one quest, otherwise use gossip menu
         if (PlayerTalkClass->GetGossipMenu().Empty() && PlayerTalkClass->GetQuestMenu().GetMenuItemCount() == 1)
         {
-            SendPreparedQuest(source, allowAutoAccept);
+            SendPreparedQuest(source, singleQuestShortcut);
             return;
         }
     }
@@ -16009,22 +16010,20 @@ static bool IsPlainTurnIn(Quest const* quest)
     return true;
 }
 
-void Player::SendPreparedQuest(WorldObject* source, bool allowAutoAccept /*= true*/)
+void Player::SendPreparedQuest(WorldObject* source, bool singleQuestShortcut /*= true*/)
 {
     QuestMenu& questMenu = PlayerTalkClass->GetQuestMenu();
     if (questMenu.Empty())
         return;
 
-    // The single-quest shortcut below accepts a lone auto-accept quest on sight. When the menu comes back on its own after a
-    // reward (SendQuestGiverMenuAfterReward, allowAutoAccept false), nothing may be accepted without a click, so that quest is
-    // sent as a one-line quest list instead: picking it there accepts it as before (HandleQuestgiverQueryQuestOpcode). Its
-    // details page cannot stand in: the 5.4.8 client treats a details page carrying the auto-accept flag 0x80000 as a quest
-    // already taken (QuestFrame.cpp:986 QuestGetAutoAccept, 1282 AcknowledgeAutoAcceptQuest).
-    bool singleQuest = questMenu.GetMenuItemCount() == 1;
-    if (singleQuest && !allowAutoAccept && questMenu.GetItem(0).QuestIcon != 4)
-        if (Quest const* quest = sObjectMgr->GetQuestTemplate(questMenu.GetItem(0).QuestId))
-            if (quest->IsAutoAccept())
-                singleQuest = false;
+    // The single-quest shortcut below opens the lone quest's page at once: it accepts an auto-accept quest, and a completed
+    // quest with no item objective goes straight to its reward page (SMSG_QUESTGIVER_OFFER_REWARD). When the menu comes back on
+    // its own after a reward (SendQuestGiverMenuAfterReward, singleQuestShortcut false) neither may happen without a click:
+    // mod-playerbots answers the master's OFFER_REWARD by handing that quest in for every bot of the group
+    // (PlayerbotAI.cpp:315). So the quest is sent as a one-line quest list; picking it there works as before
+    // (HandleQuestgiverQueryQuestOpcode). A details page cannot stand in for an auto-accept quest either: the 5.4.8 client
+    // treats one carrying the flag 0x80000 as a quest already taken (QuestFrame.cpp:986 QuestGetAutoAccept, 1282).
+    bool singleQuest = singleQuestShortcut && questMenu.GetMenuItemCount() == 1;
 
     // single element case
     if (singleQuest)
@@ -16108,13 +16107,6 @@ void Player::SendPreparedQuest(WorldObject* source, bool allowAutoAccept /*= tru
     }
 }
 
-// After "Complete Quest" the window goes back to the giver's dialogue when it still has anything to offer: quests this player
-// can take or hand in, or gossip options. That is the menu a fresh click on the giver would show, sent through the same script
-// and DB path as that click. With nothing to offer the window stays closed (the QUEST_COMPLETE bits already closed it). The
-// 5.4.8 packet has no bit for this (TC master's LaunchQuest arrives in 6.x), so the server sends the menu itself.
-// Only called from HandleQuestgiverChooseRewardOpcode, and only when neither a follow-up quest nor a reward script sent
-// anything to the window, so playerbots (which call RewardQuest directly) and scripted rewards never get here.
-// Nothing is accepted on the player's behalf: SendPreparedGossip/SendPreparedQuest run with allowAutoAccept false.
 // The prepared menu has a gossip option, or a quest the player can take or hand in. A quest still in progress alone does not
 // count: its progress page is no offer, and a click on the giver remains the way to see it.
 bool Player::PreparedMenuOffersSomething() const
@@ -16130,64 +16122,119 @@ bool Player::PreparedMenuOffersSomething() const
     return false;
 }
 
+// The source's own SmartAI handles gossip hello (event 64). Looked up as SmartScript::GetScript does: the spawn's guid rows,
+// else the entry rows.
+static bool HasSmartGossipHello(WorldObject const* source, std::string const& aiName, uint32 dbGuid, SmartScriptType type)
+{
+    if (aiName != "SmartAI" && aiName != "SmartGameObjectAI")
+        return false;
+
+    SmartAIEventList events = sSmartScriptMgr->GetScript(-int32(dbGuid), type);
+    if (events.empty())
+        events = sSmartScriptMgr->GetScript(int32(source->GetEntry()), type);
+
+    for (SmartScriptHolder const& e : events)
+        if (e.GetEventType() == SMART_EVENT_GOSSIP_HELLO)
+            return true;
+
+    return false;
+}
+
+// After "Complete Quest" the window goes back to the giver's dialogue when it still has anything to offer: quests this player
+// can take or hand in, or gossip options. That is the menu a fresh click on the giver would show, sent through the same script
+// and DB path as that click. With nothing to offer the window stays closed (the QUEST_COMPLETE bits already closed it). The
+// 5.4.8 packet has no bit for this (TC master's LaunchQuest arrives in 6.x), so the server sends the menu itself.
+// Only called from HandleQuestgiverChooseRewardOpcode, and only when neither a follow-up quest nor a reward script sent
+// anything to the window, so playerbots (which call RewardQuest directly) and scripted rewards never get here.
+// The reopened menu never accepts a quest or jumps to a quest page by itself: SendPreparedGossip/SendPreparedQuest run without
+// the single-quest shortcut, so one remaining quest comes back as a one-line quest list.
 void Player::SendQuestGiverMenuAfterReward(ObjectGuid questGiverGuid, Quest const* rewardedQuest)
 {
+    // "Gossip on Quest Completion - Suppress Gossip": Blizzard flagged these turn-ins (52 quests, e.g. 29906 Carp Diem, the
+    // 33337-33379 Vision in Time chain) to end without the giver's dialogue, mostly because a scene or phase change follows.
+    if (rewardedQuest->HasFlagEx(QUEST_FLAGS_EX_SUPPRESS_GOSSIP_COMPLETE))
+        return;
+
+    // still there and usable: a reward hook may have despawned it or taken its flags (SmartAI actions 41, 83)
+    Creature* creature = nullptr;
+    GameObject* go = nullptr;
+    WorldObject* source = nullptr;
+    uint32 menuId = 0;
+    bool scripted = false;  // a C++ script or the SmartAI may build the menu itself, which the DB probe below cannot see
     if (questGiverGuid.IsAnyTypeCreature())
     {
-        // still there and usable: a reward hook may have despawned it or taken its flags (SmartAI actions 41, 83)
-        Creature* creature = GetNPCIfCanInteractWith(questGiverGuid, UNIT_NPC_FLAG_NONE);
-        if (!creature)
-            return;
-
-        // Anything to offer? Its DB menu with quests, as the click below builds it.
-        PrepareGossipMenu(creature, creature->GetGossipMenuId(), true);
-        bool gossipNpc = creature->HasFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_GOSSIP);
-        bool offers = PreparedMenuOffersSomething()
-            // a quest flagged to relaunch the gossip on completion reopens it even when only the text is left
-            || (gossipNpc && rewardedQuest->HasFlag(QUEST_FLAGS_LAUNCH_GOSSIP_COMPLETE));
-        PlayerTalkClass->ClearMenus();
-        if (!offers)
-            return;
-
-        if (gossipNpc)
+        creature = GetNPCIfCanInteractWith(questGiverGuid, UNIT_NPC_FLAG_NONE);
+        if (creature)
         {
-            // what a click on a gossip NPC does: CMSG_GOSSIP_HELLO, HandleGossipHelloOpcode (NPCHandler.cpp)
-            if (sScriptMgr->OnGossipHello(this, creature) || creature->AI()->OnGossipHello(this))
-                return;
-
-            PrepareGossipMenu(creature, creature->GetGossipMenuId(), true);
-            SendPreparedGossip(creature, false);
-        }
-        else
-        {
-            // what a click on a quest-only NPC does: CMSG_QUESTGIVER_HELLO, HandleQuestgiverHelloOpcode (QuestHandler.cpp)
-            if (sScriptMgr->OnGossipHello(this, creature))
-                return;
-
-            PrepareGossipMenu(creature, creature->GetGossipMenuId(), true);
-            SendPreparedGossip(creature, false);
-            creature->AI()->OnGossipHello(this);
+            source = creature;
+            menuId = creature->GetGossipMenuId();
+            scripted = creature->GetScriptId() != 0
+                || HasSmartGossipHello(creature, creature->GetAIName(), creature->GetDBTableGUIDLow(), SMART_SCRIPT_TYPE_CREATURE);
         }
     }
     else if (questGiverGuid.IsGameObject())
     {
-        GameObject* go = GetGameObjectIfCanInteractWith(questGiverGuid, GAMEOBJECT_TYPE_QUESTGIVER);
-        if (!go)
-            return;
+        go = GetGameObjectIfCanInteractWith(questGiverGuid, GAMEOBJECT_TYPE_QUESTGIVER);
+        if (go)
+        {
+            source = go;
+            menuId = go->GetGOInfo()->questgiver.gossipID;
+            scripted = go->GetScriptId() != 0
+                || HasSmartGossipHello(go, go->GetAIName(), go->GetDBTableGUIDLow(), SMART_SCRIPT_TYPE_GAMEOBJECT);
+        }
+    }
 
-        PrepareGossipMenu(go, go->GetGOInfo()->questgiver.gossipID, true);
-        bool offers = PreparedMenuOffersSomething();
-        PlayerTalkClass->ClearMenus();
-        if (!offers)
-            return;
+    if (!source)
+        return;
 
-        // what a click on a quest object does: CMSG_GAMEOBJ_USE -> GameObject::Use (GameObject.cpp:1335-1367)
-        if (sScriptMgr->OnGossipHello(this, go) || go->AI()->OnGossipHello(this, true))
-            return;
+    // The reward may have phased the giver out (phaseMgr.NotifyConditionChanged in RewardQuest), e.g. a camp swapped for its
+    // next state: no dialogue from a copy the client is about to remove. The interact checks above test neither.
+    if (!InSamePhase(source) || !CanSeeOrDetect(source))
+        return;
 
-        PrepareGossipMenu(go, go->GetGOInfo()->questgiver.gossipID, true);
+    // Anything to offer in its DB menu with quests, as the click below builds it?
+    bool gossipNpc = creature && creature->HasFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_GOSSIP);
+    PrepareGossipMenu(source, menuId, true);
+    bool offers = PreparedMenuOffersSomething()
+        // a quest flagged to relaunch the gossip on completion reopens it even when only the text is left
+        || (gossipNpc && rewardedQuest->HasFlag(QUEST_FLAGS_LAUNCH_GOSSIP_COMPLETE));
+    PlayerTalkClass->ClearMenus();
+    if (!offers && !scripted)
+        return;
+
+    // What a click does: a gossip NPC gets CMSG_GOSSIP_HELLO (HandleGossipHelloOpcode, NPCHandler.cpp), a quest-only NPC
+    // CMSG_QUESTGIVER_HELLO (HandleQuestgiverHelloOpcode, QuestHandler.cpp), a quest object CMSG_GAMEOBJ_USE (GameObject::Use,
+    // GameObject.cpp:1335-1367). Scripts decide for themselves; the DB menu only goes out when it offers something.
+    uint32 windowPackets = PlayerTalkClass->GetWindowPacketCount();
+    if (creature)
+    {
+        if (gossipNpc)
+        {
+            if (!sScriptMgr->OnGossipHello(this, creature) && !creature->AI()->OnGossipHello(this) && offers)
+            {
+                PrepareGossipMenu(creature, menuId, true);
+                SendPreparedGossip(creature, false);
+            }
+        }
+        else if (!sScriptMgr->OnGossipHello(this, creature))
+        {
+            if (offers)
+            {
+                PrepareGossipMenu(creature, menuId, true);
+                SendPreparedGossip(creature, false);
+            }
+            creature->AI()->OnGossipHello(this);
+        }
+    }
+    else if (!sScriptMgr->OnGossipHello(this, go) && !go->AI()->OnGossipHello(this, true) && offers)
+    {
+        PrepareGossipMenu(go, menuId, true);
         SendPreparedGossip(go, false);
     }
+
+    // A scripted giver whose hello showed nothing: the window stays closed, and the client's gossip state is told so.
+    if (PlayerTalkClass->GetWindowPacketCount() == windowPackets)
+        PlayerTalkClass->SendCloseGossip();
 }
 
 bool Player::IsActiveQuest(uint32 quest_id) const
@@ -17050,7 +17097,8 @@ void Player::RewardQuest(Quest const* quest, uint32 reward, Object* questGiver, 
 
     // The follow-up quest offered in place (sent below), worked out before QUEST_COMPLETE goes out because that packet tells the
     // client whether to keep the window open for it (SendQuestReward). The quest is already marked rewarded above, so
-    // CanTakeQuest sees the state after this reward (as TC master's SendQuestReward).
+    // CanTakeQuest sees the state after this reward (as TC master's SendQuestReward). QUEST_COMPLETE itself stays ahead of the
+    // reward spell, where it always was: a window that spell opens (e.g. a quest it starts) must not be closed by it.
     Quest const* nextQuest = nullptr;
     if (questGiver && questGiver->IsWorldObject())
         if (Quest const* next = GetNextQuest(questGiver, quest))
@@ -17101,13 +17149,21 @@ void Player::RewardQuest(Quest const* quest, uint32 reward, Object* questGiver, 
     if (questGiver && questGiver->IsWorldObject())
     {
         //For AutoSubmition was added plr case there as it almost same exclute AI script cases.
-        // Send next quest (GetNextQuest + CanTakeQuest, checked above)
-        if (nextQuest)
-        {
-            if (nextQuest->IsAutoAccept() && CanAddQuest(nextQuest, true))
-                AddQuestAndCheckCompletion(nextQuest, questGiver);
+        // Send next quest. Checked again here, after the reward spell and the achievements, where it was always checked, so a
+        // reward spell that changes CanTakeQuest acts as before. If only the early check passed (it set the keep-open bit in
+        // QUEST_COMPLETE), the details still go out, unaccepted: the client holds the window open for them and would hang on
+        // the reward page without them; Accept is then refused by CanTakeQuest in HandleQuestgiverAcceptQuestOpcode.
+        Quest const* takeableNext = nullptr;
+        if (Quest const* next = GetNextQuest(questGiver, quest))
+            if (CanTakeQuest(next, false))
+                takeableNext = next;
 
-            PlayerTalkClass->SendQuestGiverQuestDetails(nextQuest, questGiver->GetGUID(), true, false);
+        if (Quest const* offerQuest = takeableNext ? takeableNext : nextQuest)
+        {
+            if (takeableNext && offerQuest->IsAutoAccept() && CanAddQuest(offerQuest, true))
+                AddQuestAndCheckCompletion(offerQuest, questGiver);
+
+            PlayerTalkClass->SendQuestGiverQuestDetails(offerQuest, questGiver->GetGUID(), true, false);
         }
 
         PlayerTalkClass->ClearMenus();
