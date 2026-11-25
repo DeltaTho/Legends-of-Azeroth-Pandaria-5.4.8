@@ -1156,10 +1156,13 @@ void WorldSession::HandleAreaTriggerOpcode(WorldPacket& recvData)
         return;
     }
 
-    if (entered != player->IsInAreaTrigger(atEntry))
+    // Only an entry is checked against the server's position (as Legion and CPP): the client sends a leave as it crosses its own
+    // boundary, which the server, a few yards behind and measuring from the player's edge, would mostly refuse. The tavern rest
+    // flag is checked again every zone tick anyway (Player::Update).
+    if (entered && !player->IsInAreaTrigger(atEntry))
     {
         TC_LOG_DEBUG("network", "HandleAreaTriggerOpcode: Player '%s' (GUID: %u) too far (trigger map: %u player map: %u), ignore Area Trigger ID: %u",
-                     player->GetName().c_str(), atEntry->ContinentID, player->GetMapId(), player->GetGUID().GetCounter(), areaTriggerId);
+                     player->GetName().c_str(), player->GetGUID().GetCounter(), atEntry->ContinentID, player->GetMapId(), areaTriggerId);
         return;
     }
 
@@ -1244,6 +1247,10 @@ void WorldSession::HandleAreaTriggerOpcode(WorldPacket& recvData)
     if (OutdoorPvP* pvp = player->GetOutdoorPvP())
         if (pvp->HandleAreaTrigger(_player, areaTriggerId, entered))
             return;
+
+    // Leaving a teleport trigger takes nobody anywhere
+    if (!entered)
+        return;
 
     AreaTriggerStruct const* at = sObjectMgr->GetAreaTrigger(areaTriggerId);
     if (!at)
