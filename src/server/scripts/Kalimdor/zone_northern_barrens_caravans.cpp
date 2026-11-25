@@ -809,7 +809,7 @@ struct npc_nb_caravan_kodo : public ScriptedAI
         _attackers.clear();
     }
 
-    // Ride 2 ends 59 yd inside the Crossroads, by Thork; the raiders stop coming and run off once the kodo passes into the town
+    // Ride 2 ends by Thork, about 100 yd inside the Crossroads; the raiders stop coming and run off once the kodo passes into the town
     // (play test 2026-11-25: they kept coming up to the set-down). The Crossroads is area 380 (x -563..-338 by its spawns); ride 1
     // is not done this way, Grol'dom Farm's area 1704 starts 200 yd before its end. Ours.
     void EnterTown()
@@ -1162,72 +1162,6 @@ private:
     bool _saidSpotted = false;
     bool _saidRocket = false;
     bool _ended = false;
-};
-
-// ---------------------------------------------------------------------------------------------------------------------------
-// 34432 Far Watch Caravan Kodo, 34576 Crossroads Caravan Kodo - the pack kodos behind rides 1 and 2
-// Both carry Permanent Feign Death 29266 for their sniffed dead copies (34576 263173 south of the Crossroads); the lead kodo takes
-// it off at summon. Play test 2026-11-25: on ride 2 the pack kodo dropped dead behind the caravan. With no script it had the
-// core's VehicleAI: any evade (CreatureAI::_EnterEvadeMode) reloads the template addon, which puts the feign death back, and
-// sends it home to lie there. A ride's pack kodo now cannot be hurt, never evades or fights, has the aura taken off whenever it
-// comes back and picks up its follow again. Sourced: "the caravan gets safely to Xroads" (13975, 2014-04-15). The static dead
-// copy (no summoner) keeps its aura and stays where it lies.
-// ---------------------------------------------------------------------------------------------------------------------------
-struct npc_nb_caravan_pack : public ScriptedAI
-{
-    npc_nb_caravan_pack(Creature* creature) : ScriptedAI(creature) { }
-
-    void IsSummonedBy(Unit* summoner) override
-    {
-        if (!IsCaravanKodo(summoner))
-            return;
-        _kodoGUID = summoner->GetGUID();
-        me->RemoveAurasDueToSpell(SPELL_PERMANENT_FEIGN_DEATH);
-        me->SetReactState(REACT_PASSIVE);
-    }
-
-    void MoveInLineOfSight(Unit* /*who*/) override { }
-    void AttackStart(Unit* /*who*/) override { }
-    void EnterEvadeMode(EvadeReason /*why*/) override
-    {
-        if (_kodoGUID.IsEmpty())
-            return;
-        me->CombatStop(true);
-    }
-
-    void DamageTaken(Unit* /*attacker*/, uint32& damage) override
-    {
-        if (!_kodoGUID.IsEmpty())
-            damage = 0;
-    }
-
-    void UpdateAI(uint32 diff) override
-    {
-        if (_kodoGUID.IsEmpty())
-            return;
-
-        if (_timer > diff)
-        {
-            _timer -= diff;
-            return;
-        }
-        _timer = 500;
-
-        Creature* kodo = ObjectAccessor::GetCreature(*me, _kodoGUID);
-        if (!kodo || !kodo->IsAlive())
-            return;
-
-        if (me->HasAura(SPELL_PERMANENT_FEIGN_DEATH))
-            me->RemoveAurasDueToSpell(SPELL_PERMANENT_FEIGN_DEATH);
-        if (me->IsInCombat())
-            me->CombatStop(true);
-        if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() != FOLLOW_MOTION_TYPE)
-            me->GetMotionMaster()->MoveFollow(kodo, 6.0f, float(M_PI));
-    }
-
-private:
-    ObjectGuid _kodoGUID;
-    uint32 _timer = 500;
 };
 
 // ---------------------------------------------------------------------------------------------------------------------------
@@ -1597,7 +1531,6 @@ void AddSC_northern_barrens_caravans()
 {
     new creature_script<npc_nb_caravan_giver>("npc_nb_caravan_giver");
     new creature_script<npc_nb_caravan_kodo>("npc_nb_caravan_kodo");
-    new creature_script<npc_nb_caravan_pack>("npc_nb_caravan_pack");
     new creature_script<npc_nb_caravan_attacker>("npc_nb_caravan_attacker");
     new creature_script<npc_nb_caravan_attacker_mount>("npc_nb_caravan_attacker_mount");
     new creature_script<npc_nb_dreadmist_ambusher>("npc_nb_dreadmist_ambusher");
