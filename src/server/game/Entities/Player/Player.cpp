@@ -20416,6 +20416,12 @@ void Player::_LoadQuestObjectiveStatus(PreparedQueryResult result)
                     if (objective.ID == objectiveId)
                     {
                         SetQuestSlotCounter(i, objective.StorageIndex, amount);
+                        // An event objective shows as done through its bit in the slot state, set with the credit
+                        // (SendQuestUpdateAddCreditSimple); without it here the objective showed as not done after a relog,
+                        // and the trigger gave no new credit as the quest was already complete (The Forgotten Pools 870,
+                        // play test 2026-11-25)
+                        if (objective.Type == QUEST_OBJECTIVE_AREATRIGGER && amount && objective.StorageIndex >= 0)
+                            SetQuestSlotState(i, 256 << objective.StorageIndex);
                         break;
                     }
                 }
