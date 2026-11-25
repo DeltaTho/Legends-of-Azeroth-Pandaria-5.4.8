@@ -25,7 +25,7 @@
 --     264177 (offset 14.5 yd from 264125, TDB 302793), 264179 (stacked 0.9 yd from 264314)
 --     264319 (stacked 1.6 yd from 264126)
 --   33193 Ashenvale Skirmisher: 27 -> 24 (37)
---     238572 (stacked 1.6 yd from 238162), 264366 (stacked 0.9 yd from 264362), 264368 (stacked 0.5 yd from 238571)
+--     238572 (stacked 1.6 yd from 264356), 264366 (stacked 0.9 yd from 264362), 264368 (stacked 0.5 yd from 238571)
 --   3275 Kolkar Marauder: 19 -> 16 (16)
 --     263840 (stacked 1.3 yd from 265359), 263842 (stacked 2.8 yd from 265377), 265352 (stacked 0.7 yd from 263839)
 --   34545 Razormane Frenzy: 28 -> 25 (23)
@@ -41,7 +41,7 @@
 --   3265 Razormane Hunter: 27 -> 26 (16)
 --     262617 (stacked 6.6 yd from 262581)
 --   3268 Razormane Thornweaver: 9 -> 8 (5)
---     262632 (stacked 4.0 yd from 263056)
+--     263056 (review: ground copy 36 yd below 262632, which holds TDB 303894 on the ledge)
 --   9523 Kolkar Stormseer: 14 -> 13 (13)
 --     264007 (stacked 2.6 yd from 264296)
 DELETE FROM `waypoint_data` WHERE `id` IN (263145,263153,263635,264179,264319,264366,264368,264376,265455);
@@ -58,5 +58,5 @@ DELETE FROM `creature` WHERE `id`=4316 AND `guid` IN (265008,265455);
 DELETE FROM `creature` WHERE `id`=3379 AND `guid` IN (264376);
 DELETE FROM `creature` WHERE `id`=3277 AND `guid` IN (263635);
 DELETE FROM `creature` WHERE `id`=3265 AND `guid` IN (262617);
-DELETE FROM `creature` WHERE `id`=3268 AND `guid` IN (262632);
+DELETE FROM `creature` WHERE `id`=3268 AND `guid` IN (263056);
 DELETE FROM `creature` WHERE `id`=9523 AND `guid` IN (264007);

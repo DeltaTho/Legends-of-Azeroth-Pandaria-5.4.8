@@ -1,5 +1,5 @@
 -- Northern Barrens nb-fix10 (_96): one Venture Co. where the goblin camps had two.
--- Venture Co. camps outside the Sludge Fen pass: same-entry copies a few yards apart, from doubles.py (zone 17 vs TDB 1210 + 4.4.2, game-event spawns left out,
+-- Venture Co. camps (three Drudgers 264564/264791/264856 are in the Sludge Fen, offset copies the _89 pass left): same-entry copies a few yards apart, from doubles.py (zone 17 vs TDB 1210 + 4.4.2, game-event spawns left out,
 -- same phase only), each group checked by hand. SOURCED: a stacked copy (within 8 yd) or an offset copy (unmatched, its
 -- retail spot held by a matched spawn within 16 yd) goes; the spawn holding the TDB spot stays. OURS: groups with no TDB spot
 -- keep the lowest guid; where the local count is not above retail only stacks of 2 yd or less go; no delete takes an entry
