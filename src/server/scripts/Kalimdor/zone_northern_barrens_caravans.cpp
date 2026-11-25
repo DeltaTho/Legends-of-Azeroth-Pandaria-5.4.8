@@ -36,9 +36,18 @@
  * (three at 65486's spot) and beside the ride 2 kodo's copy. They are turrets: seat 1 of the kodo carries the turret and the
  * player sits in the turret, which he controls (Unit::SetCharmedBy, CHARM_TYPE_VEHICLE), so its spell1-2 are his bar (Shoot;
  * Shoot + Face Smash). Ride 3's kodo (vehicle 1580, inferred: dossier U-2) has a plain seat 1 (no bar). Ride 4's kodo
- * (vehicle 1587) has seat 1 with CAN_CONTROL + CAN_CAST: the player charms the kodo itself and his bar is its spell1-3; the
- * script keeps the AI (OnCharmed overridden) and takes the client's movement control away (SetClientControl 0), as
- * zone_gilneas.cpp's hippogryph and Krennan's horse.
+ * (vehicle 1587) has seat 1 with CAN_CONTROL + CAN_CAST: on retail the player controlled the kodo itself and his bar was its
+ * spell1-3 (Shoot 96791, Face Smash 96792, Spiral Barrage 96961). Built that way here (the kodo charmed, its AI kept, the
+ * client's movement control taken away with SetClientControl 0) the bar did nothing (play test 2026-11-25): the client was
+ * told it no longer controls its active mover and sent no casts. So ride 4 uses the pattern of rides 1-2 (ours): seat 1 of
+ * the kodo carries Riding Shotgun 34438 (vehicle 418, the same 2.2 yd drop as on the ride 1-2 kodos: seats 9784, 4307 and
+ * 4427 share their attachment offset) and the player sits in it with full control of the turret, whose bar the script sets
+ * to the kodo's three spells. The kodo is never charmed and the server drives it.
+ *
+ * Death (play test 2026-11-25, "my body kept moving across the world"): Unit::setDeathState sent a stop spline in the same
+ * update as the vehicle-exit spline, so the client never left the seat and its view rode on with the kodo while the corpse
+ * stayed where he died. Fixed in the core (Unit::setDeathState skips the stop for a unit that just left its vehicle); every
+ * ride ends on the rider's death through the half-second check (End), and the giver offers it again.
  *
  * Balgor is put into seat 0 by the script (46598 with the seat in its base points), not by vehicle_template_accessory and a
  * spellclick row: a player's spellclick with 65466 (base points 1 = seat 0) would throw him out (Vehicle::AddPassenger ejects
@@ -72,7 +81,7 @@ enum NorthernBarrensCaravans
     NPC_BALGOR_RIDE_3               = 52227,
     NPC_BALGOR_RIDE_4               = 52333,
 
-    NPC_RIDING_SHOTGUN              = 34438,   // ride 1 turret, vehicle 418
+    NPC_RIDING_SHOTGUN              = 34438,   // ride 1 turret, vehicle 418; ride 4's too (its bar set to the kodo's spells)
     NPC_THE_HOTSEAT                 = 34582,   // ride 2 turret, vehicle 424
 
     NPC_FAR_WATCH_CARAVAN_KODO      = 34432,   // 65494 Call a Pack Kodo
@@ -121,6 +130,8 @@ enum NorthernBarrensCaravans
     SPELL_BURNING_BLADE_NET         = 96661,   // root + stun, no duration, death persistent; DONT_SAVE by 2026_11_29_22
     SPELL_FACE_SMASH_RIDE_2         = 65704,
     SPELL_FACE_SMASH_RIDE_4         = 96792,
+    SPELL_SHOOT_RIDE_4              = 96791,   // 52314's spell1-3: the ride 4 rider's bar (on the turret)
+    SPELL_SPIRAL_BARRAGE_RIDE_4     = 96961,
     SPELL_HIT_RAIDER_IN_THE_FACE_2  = 65713,   // 853 damage to the raider (its effect 1)
     SPELL_HIT_RAIDER_IN_THE_FACE_4  = 96806,   // 2441 damage
 
@@ -270,7 +281,7 @@ static CaravanRide const CaravanRides[MAX_CARAVAN_RIDES] =
     { NPC_CHIEF_CARAVAN_KODO, QUEST_MORSHAN_CARAVAN_PICKUP, NPC_BALGOR_RIDE_3, 0, NPC_CROSSROADS_CARAVAN_CART,
       NPC_ROCCO_CROSSROADS, MENU_ROCCO_CROSSROADS, -1, NPC_CREDIT_SPEAK_ROCCO, NPC_CREDIT_RIDE_TO_DREADMIST, false,
       { -404.69f, -2678.07f, 95.59f, 6.16f }, Ride3Road, std::size(Ride3Road) },
-    { NPC_MASTER_CARAVAN_KODO, QUEST_MORSHAN_CARAVAN_DELIVERY, NPC_BALGOR_RIDE_4, 0, NPC_MORSHAN_CARAVAN_CART,
+    { NPC_MASTER_CARAVAN_KODO, QUEST_MORSHAN_CARAVAN_DELIVERY, NPC_BALGOR_RIDE_4, NPC_RIDING_SHOTGUN, NPC_MORSHAN_CARAVAN_CART,
       NPC_NAGALA_WHIPSHANK, MENU_NAGALA, -1, NPC_CREDIT_SPEAK_NAGALA, NPC_CREDIT_RIDE_DEFENDED, false,
       { 286.50f, -2545.60f, 91.80f, 0.09f }, Ride4Road, std::size(Ride4Road) },
 };
@@ -435,13 +446,25 @@ struct npc_nb_caravan_kodo : public ScriptedAI
         me->RemoveFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_SPELLCLICK);   // no spellclick row: no click cursor (review M3)
         me->setActive(true, ActiveFlags::Script);   // up to 1 150 yd across several grids
 
-        // Balgor in seat 0, then the turret in seat 1 (rides 1-2). Each ride aura stacks while an enterable seat is free
-        // (Aura::CanStackWith, CONTROL_VEHICLE): seat 1 of 415 / 422 / 1580 and seat 2 of 1587 are.
+        // Balgor in seat 0, then the turret in seat 1 (rides 1, 2 and 4). Each ride aura stacks while an enterable seat is
+        // free (Aura::CanStackWith, CONTROL_VEHICLE): seat 1 of 415 / 422 / 1580 and seat 2 of 1587 are.
         if (Creature* balgor = SummonPassenger(_ride->Driver, 0))
             _driverGUID = balgor->GetGUID();
         if (_ride->Turret)
             if (Creature* turret = SummonPassenger(_ride->Turret, 1))
+            {
                 _turretGUID = turret->GetGUID();
+                // Ride 4: the turret carries the kodo's bar (sourced: 52314 spell1-3); set before the rider boards, as
+                // Player::VehicleSpellInitialize and HandleCastSpellOpcode (Creature::HasSpell) read m_spells
+                if (_rideIndex == RIDE_DREADMIST)
+                {
+                    for (uint32& spell : turret->m_spells)
+                        spell = 0;
+                    turret->m_spells[0] = SPELL_SHOOT_RIDE_4;
+                    turret->m_spells[1] = SPELL_FACE_SMASH_RIDE_4;
+                    turret->m_spells[2] = SPELL_SPIRAL_BARRAGE_RIDE_4;
+                }
+            }
 
         // The pack kodo or cart behind (the kodos' own "Call a Pack Kodo" spells, summoned here; the follow is ours)
         Position behind = me->GetNearPosition(8.0f, float(M_PI));
@@ -487,12 +510,8 @@ struct npc_nb_caravan_kodo : public ScriptedAI
     void MoveInLineOfSight(Unit* /*who*/) override { }
     void AttackStart(Unit* /*who*/) override { }
     void EnterEvadeMode(EvadeReason /*why*/) override { }
-    // Ride 4's seat 1 charms the kodo: keep this AI (CreatureAI::OnCharmed would swap it for PossessedAI, C86)
-    void OnCharmed(bool apply) override
-    {
-        if (!apply)
-            me->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_PLAYER_CONTROLLED);
-    }
+    // No player charms a kodo (the controlling seat 1 of ride 4's carries the turret): keep this AI whatever happens (C86)
+    void OnCharmed(bool /*apply*/) override { }
 
     void DamageTaken(Unit* /*attacker*/, uint32& damage) override
     {
@@ -538,7 +557,7 @@ struct npc_nb_caravan_kodo : public ScriptedAI
             return;
         }
 
-        // Turret: its only seat (0); ride 3 and 4: seat 1 of the kodo (ride 4's 9784 cannot be entered, it is named)
+        // Turret (rides 1, 2, 4): its only seat (0); ride 3: seat 1 of the kodo
         int8 const seat = _ride->Turret ? 0 : 1;
         player->CastCustomSpell(SPELL_RIDE_VEHICLE_HARDCODED, SPELLVALUE_BASE_POINT0, seat + 1, base, true);
         if (!IsRiding(player))
@@ -548,10 +567,6 @@ struct npc_nb_caravan_kodo : public ScriptedAI
             return;
         }
         _boarded = true;
-
-        // Ride 4: the kodo is driven by the script; the player keeps the bar but not the reins
-        if (_rideIndex == RIDE_DREADMIST)
-            player->SetClientControl(me, false);
 
         // The rider shield, ride 3 only (re-walk RW-W1): its road passes two aggressive Savannah Huntresses (263855 ~7 yd,
         // 264348 ~16 yd) and the seated player has no bar and no control, so nothing on the way may pick a fight with him
@@ -1024,6 +1039,10 @@ struct npc_nb_caravan_kodo : public ScriptedAI
             _shielded = false;
             if (IsRiding(player))
                 player->ExitVehicle();
+            // Leaving the turret gives the client its own character back (Unit::RemoveCharmedBy, CHARM_TYPE_VEHICLE); make
+            // sure of it on every path, a dead rider included (ours)
+            if (!player->GetVehicle() && player->m_mover != player)
+                player->SetClientControl(player, true);
         }
 
         // On arrival the attackers were sent running and go 6 s later by themselves; on a ride given up they go at once
@@ -1115,8 +1134,8 @@ struct npc_nb_caravan_kodo : public ScriptedAI
                     return;
                 case EVENT_CARAVAN_CHECK:
                 {
-                    // Given up: the rider left the seat (rides 1-3 can get off; on ride 4 only death or a forced exit takes
-                    // him off), died, logged out, or the quest left his log
+                    // Given up: the rider left the seat (every ride can be left; ride 4's retail seat 9784 had no exit, the
+                    // turret seat 4346 has one: ours), died, logged out, was teleported, or the quest left his log
                     Player* player = GetRider();
                     if (!player || !player->IsInWorld() || !player->IsAlive() || (_boarded && !IsRiding(player))
                         || (!_credited && player->GetQuestStatus(_ride->Quest) != QUEST_STATUS_INCOMPLETE))
@@ -1473,7 +1492,7 @@ private:
 };
 
 // ---------------------------------------------------------------------------------------------------------------------------
-// 65704 Face Smash (ride 2, The Hotseat's spell2), 96792 Face Smash (ride 4, the Master Caravan Kodo's spell2)
+// 65704 Face Smash (ride 2, The Hotseat's spell2), 96792 Face Smash (ride 4, the Master Caravan Kodo's spell2, on the turret)
 // "Butt them with the gun when close" (wiki 13975, comment 2013-02 [+8]); 29111: "wolf riders shot or punched off the kodo".
 // The DBC aims it at a nearby creature with no range (TARGET_UNIT_NEARBY_ENTRY, range 0) and the follow-up "Hit Raider in the
 // Face" (65713: 853, 96806: 2441 damage) at a vehicle's passenger: the script takes the nearest living raider of the ride
