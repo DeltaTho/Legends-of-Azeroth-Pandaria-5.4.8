@@ -1529,14 +1529,17 @@ class spell_nb_caravan_face_smash : public SpellScript
         bool const ride2 = GetSpellInfo()->Id == SPELL_FACE_SMASH_RIDE_2;   // else SPELL_FACE_SMASH_RIDE_4
         uint32 const damage = ride2 ? 853 : 2441;
         uint32 const followUp = ride2 ? SPELL_HIT_RAIDER_IN_THE_FACE_2 : SPELL_HIT_RAIDER_IN_THE_FACE_4;
-        raider->ExitVehicle();
-        // With a combat log line and the damage number (review round 1, M4)
-        SpellNonMeleeDamage hit(caster, raider, followUp, SPELL_SCHOOL_MASK_NORMAL);
+        // Damage first: a raider killed in the saddle leaves it through setDeathState, which keeps the exit on the clients;
+        // exiting first and then dying in the same update would send a stop over the exit (review of nb-fix12, minor 1)
+        SpellNonMeleeDamage hit(caster, raider, followUp, SPELL_SCHOOL_MASK_NORMAL);   // with a combat log line (review round 1, M4)
         hit.damage = damage;
         caster->DealSpellDamage(&hit, false);
         caster->SendSpellNonMeleeDamageLog(&hit);
         if (raider->IsAlive())
+        {
+            raider->ExitVehicle();
             raider->KnockbackFrom(caster->GetPositionX(), caster->GetPositionY(), 8.0f, 5.0f);
+        }
     }
 
     void Register() override
