@@ -12749,7 +12749,10 @@ void Unit::setDeathState(DeathState s)
             ClearUnitState(UNIT_STATE_MOVING);
         else
             StopMoving();
-        DisableSpline();   // server side only (marks the spline done, so Player::KillPlayer's root sends no stop either)
+        // Server side only (marks the spline done, so Player::KillPlayer's root sends no stop either). A creature that left a
+        // seat keeps its exit/fall spline running on the server too, so its corpse lands where the clients see it (as TrinityCore).
+        if (!leftVehicle || GetTypeId() == TYPEID_PLAYER)
+            DisableSpline();
         // without this when removing IncreaseMaxHealth aura player may stuck with 1 hp
         // do not why since in IncreaseMaxHealth currenthealth is checked
         SetHealth(0);
